@@ -12,6 +12,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/misc/taller_puente.h"
 #include "hw/gpio/esp32_gpio.h"
+#include "hw/misc/esp32_sens.h"
 
 #define CARGA_MAX_SPI 4096
 #define BUSES_SPI 4
@@ -28,6 +29,15 @@ static void procesar_trama_entrante(const uint8_t *t, uint16_t largo)
 {
     if (t[0] == TALLER_TRAMA_ENTRADA && largo >= 2) {
         esp32_gpio_fijar_entrada(t[CABECERA], t[CABECERA + 1] != 0);
+    } else if (t[0] == TALLER_TRAMA_ANALOGICO && largo >= 3) {
+        static const uint8_t gpio_adc1[] = {36, 37, 38, 39, 32, 33, 34, 35};
+
+        for (int canal = 0; canal < ESP32_SENS_CANALES_ADC1; canal++) {
+            if (t[CABECERA] == gpio_adc1[canal]) {
+                esp32_sens_fijar_valor(canal, lduw_le_p(t + CABECERA + 1));
+                break;
+            }
+        }
     }
     /* otros tipos: se ignoran (compatibilidad con versiones futuras) */
 }

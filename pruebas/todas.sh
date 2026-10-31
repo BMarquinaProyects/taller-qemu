@@ -9,4 +9,5 @@ python3 pruebas/qemu_prueba.py "$Q" humo pruebas/gpio_prueba.flash.bin "TALLER-O
 python3 pruebas/qemu_prueba.py "$Q" puente pruebas/puente_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" entrada pruebas/entrada_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" pwm pruebas/pwm_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q" analogico pruebas/analogico_prueba.flash.bin || r=1
 exit $r

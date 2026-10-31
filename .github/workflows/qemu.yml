@@ -29,6 +29,7 @@ jobs:
           python3 pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
           python3 pruebas/qemu_prueba.py $Q entrada pruebas/entrada_prueba.flash.bin
           python3 pruebas/qemu_prueba.py $Q pwm pruebas/pwm_prueba.flash.bin
+          python3 pruebas/qemu_prueba.py $Q analogico pruebas/analogico_prueba.flash.bin
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-linux
@@ -61,6 +62,7 @@ jobs:
           python pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
           python pruebas/qemu_prueba.py $Q entrada pruebas/entrada_prueba.flash.bin
           python pruebas/qemu_prueba.py $Q pwm pruebas/pwm_prueba.flash.bin
+          python pruebas/qemu_prueba.py $Q analogico pruebas/analogico_prueba.flash.bin
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-windows

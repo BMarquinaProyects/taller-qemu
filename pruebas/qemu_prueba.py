@@ -5,9 +5,11 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> puente <puente_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> entrada <entrada_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> pwm <pwm_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> analogico <analogico_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
+import re
 import socket
 import struct
 import subprocess
@@ -160,10 +162,35 @@ def puente(qemu: str, firmware: str) -> int:
 
 
 TIPO_ENTRADA = 16
+TIPO_ANALOGICO = 17
 
 
 def trama_entrada(pin: int, nivel: int) -> bytes:
     return CABECERA.pack(TIPO_ENTRADA, 3, 2, 0) + bytes([pin, nivel])
+
+
+def trama_analogico(gpio: int, valor: int) -> bytes:
+    return CABECERA.pack(TIPO_ANALOGICO, 3, 3, 0) + struct.pack("<BH", gpio, valor)
+
+
+def esperar_analogico(sock: socket.socket, buf: list, minimo: int, maximo: int,
+                     timeout_s: float) -> bool:
+    """Espera una línea A=<valor> completa y nueva, dentro del intervalo inclusivo."""
+    inicio = len(buf[0])
+    fin = time.monotonic() + timeout_s
+    sock.settimeout(0.2)
+    while time.monotonic() < fin:
+        try:
+            trozo = sock.recv(4096)
+        except socket.timeout:
+            continue
+        if not trozo:
+            return False
+        buf[0] += trozo.decode(errors="replace")
+        for muestra in re.finditer(r"^A=([0-9]+)\r?\n", buf[0], re.MULTILINE):
+            if muestra.start() >= inicio and minimo <= int(muestra[1]) <= maximo:
+                return True
+    return False
 
 
 def esperar_en_uart(sock: socket.socket, buf: list, texto: str, timeout_s: float) -> bool:
@@ -209,6 +236,42 @@ def entrada(qemu: str, firmware: str) -> int:
     ok = all(r for _, r in pasos) and hola in ([2], [3])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
+    return 0 if ok else 1
+
+
+def analogico(qemu: str, firmware: str) -> int:
+    """Inyecta valores crudos en GPIO34 (ADC1 canal 6) mediante el puente v3."""
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
+    tramas: list = []
+    parar = threading.Event()
+    buf = [""]
+    pasos = []
+    s_puente = s_uart = hilo = None
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        pasos.append(("inicial=0", esperar_analogico(s_uart, buf, 0, 0, 30)))
+        s_puente.sendall(trama_analogico(34, 2048))
+        pasos.append(("medio=1900..2200", esperar_analogico(s_uart, buf, 1900, 2200, 5)))
+        s_puente.sendall(trama_analogico(34, 4095))
+        pasos.append(("alto=4000..4095", esperar_analogico(s_uart, buf, 4000, 4095, 5)))
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        tmp.cleanup()
+
+    hola = [(v, c) for tp, v, _, c in tramas if tp == 1]
+    ok = all(r for _, r in pasos) and hola == [(3, struct.pack("<I", 3))]
+    print("pasos:", pasos, "HOLA:", hola)
+    print("OK analogico" if ok else "FALLO analogico\n" + buf[0][-600:])
     return 0 if ok else 1
 
 
@@ -277,4 +340,6 @@ if __name__ == "__main__":
         sys.exit(entrada(qemu, sys.argv[3]))
     if modo == "pwm":
         sys.exit(pwm(qemu, sys.argv[3]))
+    if modo == "analogico":
+        sys.exit(analogico(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))
