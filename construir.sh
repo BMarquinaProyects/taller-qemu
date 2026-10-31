@@ -56,6 +56,7 @@ done
 
 # 3. Configurar (una vez) y compilar
 BUILD="$TRABAJO/build-$HOST"
+INST="$TRABAJO/instalar-$HOST"
 # Prefijo no raíz: con --prefix=/ QEMU no encuentra share/qemu (ROM del ESP32) al reubicarse.
 OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=share
           --enable-gcrypt --enable-slirp
@@ -65,7 +66,9 @@ OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=sha
 if [[ -n "$EXE" ]]; then
   # Windows: enlazado estático, como la receta de Espressif (.github/workflows/scripts/configure-win.sh).
   # Con enlazado dinámico, la glib de MSYS2 da "multiple definition of g_main_context_ref" (E-022).
-  OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=share
+  # Prefijo = la carpeta de instalación con ruta de Windows: con DESTDIR, MSYS2 convierte /qemu
+  # en una ruta de Windows y la instalación acaba en otro sitio (E-023). QEMU es reubicable.
+  OPCIONES=(--target-list=xtensa-softmmu --prefix="$(cygpath -m "$INST")/qemu" --bindir=bin --datadir=share
             --static --without-default-features
             --enable-gcrypt --enable-pixman --enable-slirp --enable-stack-protector)
 fi
@@ -87,9 +90,12 @@ ninja -C "$BUILD" "qemu-system-xtensa${EXE}"
 
 # 4. Instalar en una carpeta temporal y empaquetar con la estructura del de Espressif: qemu/bin, qemu/share
 paso "Empaquetando"
-INST="$TRABAJO/instalar-$HOST"
 rm -rf "${INST:?}"
-DESTDIR="$INST" ninja -C "$BUILD" install > /dev/null   # → $INST/qemu/bin, $INST/qemu/share
+if [[ -n "$EXE" ]]; then
+  ninja -C "$BUILD" install > /dev/null                  # prefijo = $INST/qemu
+else
+  DESTDIR="$INST" ninja -C "$BUILD" install > /dev/null  # → $INST/qemu/bin, $INST/qemu/share
+fi
 if [[ -n "$EXE" ]]; then
   # DLL de MSYS2 que necesita el ejecutable
   ldd "$INST/qemu/bin/qemu-system-xtensa.exe" | awk -v p="${MSYSTEM_PREFIX:-/ucrt64}/" 'index($3, p) == 1 {print $3}' | sort -u | while read -r dll; do
