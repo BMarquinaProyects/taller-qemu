@@ -25,6 +25,11 @@ REG32(GPIO_ENABLE1_W1TC, 0x0034)
 REG32(GPIO_STRAP, 0x0038)
 REG32(GPIO_IN, 0x003C)
 REG32(GPIO_IN1, 0x0040)
+REG32(GPIO_FUNC0_OUT_SEL_CFG, 0x0530)
+    FIELD(GPIO_FUNC0_OUT_SEL_CFG, OUT_SEL, 0, 9)
+
+#define ESP32_GPIO_CANTIDAD_PINES 40
+#define ESP32_GPIO_SENAL_SOFTWARE 256
 
 /* GPIO 0-31 en los registros "sin 1"; GPIO 32-39 en los bits 0-7 de los registros "1". */
 #define ESP32_GPIO_MASCARA_ALTA 0xFFull
@@ -42,10 +47,13 @@ typedef struct Esp32GpioState {
     uint64_t out;        /* nivel que el firmware escribe */
     uint64_t enable;     /* 1 = el pin es salida */
     uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
+    uint32_t seleccion_salida[ESP32_GPIO_CANTIDAD_PINES];
 } Esp32GpioState;
 
 /* Taller: nivel que llega desde fuera a un pin de entrada (botones, sensores…). */
 void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel);
+/* Primer pin conectado a la señal de la matriz de salida, o -1. */
+int esp32_gpio_pin_de_senal(int senal);
 
 typedef struct Esp32GpioClass {
     SysBusDeviceClass parent_class;

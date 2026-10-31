@@ -18,12 +18,27 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32_gpio.h"
+#include "hw/misc/esp32_ledc.h"
 #include "hw/misc/taller_puente.h"
 
 
 
 /* Taller: el GPIO del chip (uno por máquina), para que el puente pueda fijar entradas. */
 static Esp32GpioState *gpio_del_chip;
+
+int esp32_gpio_pin_de_senal(int senal)
+{
+    if (!gpio_del_chip || senal < 0 || senal > 511) {
+        return -1;
+    }
+    for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
+        if (FIELD_EX32(gpio_del_chip->seleccion_salida[pin],
+                       GPIO_FUNC0_OUT_SEL_CFG, OUT_SEL) == (uint32_t)senal) {
+            return pin;
+        }
+    }
+    return -1;
+}
 
 void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel)
 {
@@ -55,6 +70,11 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32GpioState *s = ESP32_GPIO(opaque);
     uint64_t r = 0;
+    if (addr >= A_GPIO_FUNC0_OUT_SEL_CFG &&
+        addr < A_GPIO_FUNC0_OUT_SEL_CFG + 4 * ESP32_GPIO_CANTIDAD_PINES &&
+        !(addr & 3)) {
+        return s->seleccion_salida[(addr - A_GPIO_FUNC0_OUT_SEL_CFG) / 4];
+    }
     switch (addr) {
     case A_GPIO_STRAP:
         r = s->strap_mode;
@@ -77,6 +97,23 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
     Esp32GpioState *s = ESP32_GPIO(opaque);
     uint32_t v = (uint32_t)value;
     uint64_t out_antes = s->out, enable_antes = s->enable;
+    if (addr >= A_GPIO_FUNC0_OUT_SEL_CFG &&
+        addr < A_GPIO_FUNC0_OUT_SEL_CFG + 4 * ESP32_GPIO_CANTIDAD_PINES &&
+        !(addr & 3)) {
+        int pin = (int)((addr - A_GPIO_FUNC0_OUT_SEL_CFG) / 4);
+        int anterior = FIELD_EX32(s->seleccion_salida[pin],
+                                 GPIO_FUNC0_OUT_SEL_CFG, OUT_SEL);
+        int nueva = FIELD_EX32(v, GPIO_FUNC0_OUT_SEL_CFG, OUT_SEL);
+
+        /* Conservar también inversión y habilitación para las lecturas del SDK. */
+        s->seleccion_salida[pin] = v;
+        if (anterior != nueva) {
+            /* La señal anterior puede perder su pin; la nueva puede ganarlo. */
+            esp32_ledc_actualizar_senal(anterior);
+            esp32_ledc_actualizar_senal(nueva);
+        }
+        return;
+    }
     switch (addr) {
     case A_GPIO_OUT:          s->out = con_baja(s->out, v); break;
     case A_GPIO_OUT_W1TS:     s->out |= v; break;
@@ -107,9 +144,20 @@ static const MemoryRegionOps uart_ops = {
 static void esp32_gpio_reset_hold(Object *obj, ResetType type)
 {
     Esp32GpioState *s = ESP32_GPIO(obj);
+    uint32_t anteriores[ESP32_GPIO_CANTIDAD_PINES];
+
+    memcpy(anteriores, s->seleccion_salida, sizeof(anteriores));
     s->out = 0;
     s->enable = 0;
     s->in_externo = ~0ull;
+    for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
+        s->seleccion_salida[pin] = ESP32_GPIO_SENAL_SOFTWARE;
+    }
+    /* Recalcular después de desconectar toda la matriz evita rutas intermedias. */
+    for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
+        esp32_ledc_actualizar_senal(FIELD_EX32(anteriores[pin],
+                                            GPIO_FUNC0_OUT_SEL_CFG, OUT_SEL));
+    }
 }
 
 static void esp32_gpio_realize(DeviceState *dev, Error **errp)

@@ -170,6 +170,8 @@ static void esp32_soc_reset(DeviceState *dev)
         device_cold_reset(DEVICE(&s->aes));
         device_cold_reset(DEVICE(&s->rsa));
         device_cold_reset(DEVICE(&s->gpio));
+        /* LEDC conserva registros y muestras PWM; también debe perderlos aquí. */
+        device_cold_reset(DEVICE(&s->ledc));
         for (int i = 0; i < ESP32_UART_COUNT; ++i) {
             device_cold_reset(DEVICE(&s->uart[i]));
         }

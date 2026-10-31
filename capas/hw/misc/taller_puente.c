@@ -20,7 +20,7 @@
 static CharBackend puente_fe;
 static bool puente_activo;
 
-/* Tramas que llegan del programa externo (protocolo v2): se acumulan hasta tener una entera. */
+/* Tramas que llegan del programa externo: se acumulan hasta tener una entera. */
 static uint8_t entrada_buf[CABECERA + 256];
 static size_t entrada_len;
 
@@ -126,6 +126,23 @@ void taller_puente_gpio(uint64_t niveles, uint64_t salidas)
 }
 
 /* ---- Periférico SSI que cuelga de los buses SPI2/SPI3 y reenvía cada byte al puente ---- */
+
+void taller_puente_pwm(uint8_t gpio, uint32_t frecuencia_mhz, uint32_t ciclo_ppm)
+{
+    uint8_t carga[9];
+
+    if (!puente_activo) {
+        return;
+    }
+    /* Como GPIO, PWM debe ir después de los bytes SPI anteriores al cambio. */
+    for (int b = 0; b < BUSES_SPI; b++) {
+        taller_puente_spi_fin(b);
+    }
+    carga[0] = gpio;
+    stl_le_p(carga + 1, frecuencia_mhz);
+    stl_le_p(carga + 5, ciclo_ppm);
+    enviar(TALLER_TRAMA_PWM, carga, sizeof(carga));
+}
 
 typedef struct TallerSpiState {
     SSIPeripheral parent_obj;

@@ -4,6 +4,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> humo   <firmware.bin> <marca>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> puente <puente_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> entrada <entrada_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> pwm <pwm_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -131,7 +132,8 @@ def puente(qemu: str, firmware: str) -> int:
     errores = []
     if "TALLER-OK puente" not in texto:
         errores.append("sin marca TALLER-OK puente en la UART")
-    if not tramas or tramas[0][0] != 1 or struct.unpack("<I", tramas[0][3])[0] not in (1, 2):
+    if (not tramas or tramas[0][0] != 1 or len(tramas[0][3]) != 4
+            or struct.unpack("<I", tramas[0][3])[0] not in (1, 2, 3)):
         errores.append(f"la primera trama no es HOLA: {tramas[:1]}")
     tiempos = [t for _, _, t, _ in tramas]
     if tiempos != sorted(tiempos):
@@ -161,7 +163,7 @@ TIPO_ENTRADA = 16
 
 
 def trama_entrada(pin: int, nivel: int) -> bytes:
-    return CABECERA.pack(TIPO_ENTRADA, 2, 2, 0) + bytes([pin, nivel])
+    return CABECERA.pack(TIPO_ENTRADA, 3, 2, 0) + bytes([pin, nivel])
 
 
 def esperar_en_uart(sock: socket.socket, buf: list, texto: str, timeout_s: float) -> bool:
@@ -183,7 +185,7 @@ def esperar_en_uart(sock: socket.socket, buf: list, texto: str, timeout_s: float
 
 
 def entrada(qemu: str, firmware: str) -> int:
-    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (protocolo v2)."""
+    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (v2/v3)."""
     tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
     tramas: list = []
     parar = threading.Event()
@@ -204,10 +206,67 @@ def entrada(qemu: str, firmware: str) -> int:
         proc.wait()
         tmp.cleanup()
     hola = [struct.unpack("<I", c)[0] for tp, _, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola == [2]
+    ok = all(r for _, r in pasos) and hola in ([2], [3])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
     return 0 if ok else 1
+
+
+def comprobar_pwm(tramas: list, texto: str) -> list[str]:
+    """Exige la versión 3 y una muestra del servo: 50 Hz, ciclo del 5 %."""
+    errores = []
+    if "TALLER-OK pwm" not in texto:
+        errores.append("sin marca TALLER-OK pwm en la UART")
+    if (not tramas or tramas[0][0] != 1 or tramas[0][1] != 3
+            or tramas[0][3] != struct.pack("<I", 3)):
+        errores.append(f"la primera trama no es HOLA versión 3: {tramas[:1]}")
+    coincide = False
+    for tipo, version, _, carga in tramas:
+        if tipo != 4:
+            continue
+        if version != 3 or len(carga) != 9:
+            errores.append(f"trama PWM inválida: versión {version}, {len(carga)} bytes")
+            continue
+        gpio, frecuencia_mhz, ciclo_ppm = struct.unpack("<BII", carga)
+        if gpio == 13 and 49500 <= frecuencia_mhz <= 50500 and 47000 <= ciclo_ppm <= 53000:
+            coincide = True
+    if not coincide:
+        errores.append("sin PWM en GPIO13 de 50 Hz ±1 % y ciclo 5 % ±0,3 %")
+    return errores
+
+
+def pwm(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
+    tramas: list = []
+    parar = threading.Event()
+    s_puente = s_uart = hilo = None
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["TALLER-OK pwm", "TALLER-FALLO"], 60)
+        time.sleep(0.5)  # Dejar que el lector del puente recoja las últimas tramas.
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        tmp.cleanup()
+
+    errores = comprobar_pwm(tramas, texto)
+    print(f"tramas: {len(tramas)} (PWM {sum(1 for t in tramas if t[0] == 4)})")
+    for error in errores:
+        print("FALLO", error)
+    if errores:
+        print(texto[-600:])
+    else:
+        print("OK pwm")
+    return 1 if errores else 0
 
 
 if __name__ == "__main__":
@@ -216,4 +275,6 @@ if __name__ == "__main__":
         sys.exit(humo(qemu, sys.argv[3], sys.argv[4]))
     if modo == "entrada":
         sys.exit(entrada(qemu, sys.argv[3]))
+    if modo == "pwm":
+        sys.exit(pwm(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))
