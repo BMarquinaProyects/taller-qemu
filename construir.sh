@@ -50,16 +50,17 @@ done
 
 # 3. Configurar (una vez) y compilar
 BUILD="$TRABAJO/build-$HOST"
-if [[ ! -f "$BUILD/build.ninja" ]]; then
+# Prefijo no raíz: con --prefix=/ QEMU no encuentra share/qemu (ROM del ESP32) al reubicarse.
+OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=share
+          --enable-gcrypt --enable-slirp
+          --disable-sdl --disable-gtk --disable-vnc --disable-docs
+          --disable-werror --disable-capstone --disable-user
+          --disable-tools --disable-guest-agent)
+if [[ ! -f "$BUILD/build.ninja" || "$(cat "$BUILD/.opciones-taller" 2>/dev/null)" != "${OPCIONES[*]}" ]]; then
   paso "Configurando"
   mkdir -p "$BUILD"
-  ( cd "$BUILD" && "$SRC/configure" \
-      --target-list=xtensa-softmmu \
-      --prefix=/ --bindir=bin --datadir=share \
-      --enable-gcrypt --enable-slirp \
-      --disable-sdl --disable-gtk --disable-vnc --disable-docs \
-      --disable-werror --disable-capstone --disable-user \
-      --disable-tools --disable-guest-agent )
+  ( cd "$BUILD" && "$SRC/configure" "${OPCIONES[@]}" )
+  echo "${OPCIONES[*]}" > "$BUILD/.opciones-taller"
 fi
 paso "Compilando"
 ninja -C "$BUILD" "qemu-system-xtensa${EXE}"
@@ -67,8 +68,8 @@ ninja -C "$BUILD" "qemu-system-xtensa${EXE}"
 # 4. Instalar en una carpeta temporal y empaquetar con la estructura del de Espressif: qemu/bin, qemu/share
 paso "Empaquetando"
 INST="$TRABAJO/instalar-$HOST"
-rm -rf "$INST"
-DESTDIR="$INST/qemu" ninja -C "$BUILD" install > /dev/null
+rm -rf "${INST:?}"
+DESTDIR="$INST" ninja -C "$BUILD" install > /dev/null   # → $INST/qemu/bin, $INST/qemu/share
 if [[ -n "$EXE" ]]; then
   # DLL de MSYS2 que necesita el ejecutable
   ldd "$INST/qemu/bin/qemu-system-xtensa.exe" | awk '/\/mingw64\//{print $3}' | sort -u | while read -r dll; do

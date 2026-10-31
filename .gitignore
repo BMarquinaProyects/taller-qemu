@@ -3,3 +3,4 @@ dist/
 __pycache__/
 desktop.ini
 carpeta-*.ico
+pruebas/*/build/

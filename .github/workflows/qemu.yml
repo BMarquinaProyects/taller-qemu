@@ -1,0 +1,75 @@
+# Compila QEMU con las capas de Taller en Linux y Windows, ejecuta las pruebas de humo
+# y, al etiquetar vX.Y.Z, publica la release con los dos paquetes.
+name: qemu
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build pkg-config python3-venv flex bison \
+            libglib2.0-dev libpixman-1-dev libslirp-dev libgcrypt20-dev
+      - name: Compilar
+        run: bash construir.sh
+      - name: Pruebas de humo
+        run: |
+          Q=.trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa
+          python3 pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-linux
+          path: dist/*.tar.xz
+
+  windows:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make diffutils git tar xz
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-glib2 mingw-w64-x86_64-pixman
+            mingw-w64-x86_64-libslirp mingw-w64-x86_64-libgcrypt mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-meson mingw-w64-x86_64-python mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-curl
+      - name: Compilar
+        run: bash construir.sh
+      - name: Pruebas de humo
+        run: |
+          Q=.trabajo/instalar-x86_64-w64-mingw32/qemu/bin/qemu-system-xtensa.exe
+          python pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-windows
+          path: dist/*.tar.xz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*.tar.xz -R "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "QEMU de Espressif (esp-develop-9.2.2-20260417) con las capas de Taller. Ver AVISO.md."
