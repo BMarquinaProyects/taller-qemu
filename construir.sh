@@ -64,7 +64,7 @@ OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=sha
           --disable-tools --disable-guest-agent)
 if [[ -n "$EXE" ]]; then
   # Windows: enlazado estático, como la receta de Espressif (.github/workflows/scripts/configure-win.sh).
-  # Con enlazado dinámico, la glib de MSYS2 da "multiple definition of g_main_context_ref" (E-021).
+  # Con enlazado dinámico, la glib de MSYS2 da "multiple definition of g_main_context_ref" (E-022).
   OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=share
             --static --without-default-features
             --enable-gcrypt --enable-pixman --enable-slirp --enable-stack-protector)
