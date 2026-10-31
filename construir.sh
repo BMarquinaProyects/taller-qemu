@@ -62,10 +62,24 @@ OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=sha
           --disable-sdl --disable-gtk --disable-vnc --disable-docs
           --disable-werror --disable-capstone --disable-user
           --disable-tools --disable-guest-agent)
+if [[ -n "$EXE" ]]; then
+  # Windows: enlazado estático, como la receta de Espressif (.github/workflows/scripts/configure-win.sh).
+  # Con enlazado dinámico, la glib de MSYS2 da "multiple definition of g_main_context_ref" (E-021).
+  OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=share
+            --static --without-default-features
+            --enable-gcrypt --enable-pixman --enable-slirp --enable-stack-protector)
+fi
 if [[ ! -f "$BUILD/build.ninja" || "$(cat "$BUILD/.opciones-taller" 2>/dev/null)" != "${OPCIONES[*]}" ]]; then
   paso "Configurando"
   mkdir -p "$BUILD"
-  ( cd "$BUILD" && "$SRC/configure" "${OPCIONES[@]}" )
+  ( cd "$BUILD" && "$SRC/configure" "${OPCIONES[@]}" ) || { cat "$BUILD/meson-logs/meson-log.txt" | tail -60; false; }
+  if [[ -n "$EXE" ]]; then
+    # pkg-config de libgcrypt da rutas Unix y bibliotecas dinámicas (.dll.a) para libintl/libiconv:
+    # se cambian por las estáticas con ruta de Windows (mismo arreglo que Espressif).
+    BASE_MSYS="$(cygpath -m /)"
+    PREF="${MSYSTEM_PREFIX:-/ucrt64}"
+    sed -i "s|${PREF}/lib/libintl.dll.a|${BASE_MSYS}${PREF#/}/lib/libintl.a|g; s|${PREF}/lib/libiconv.dll.a|${BASE_MSYS}${PREF#/}/lib/libiconv.a|g" "$BUILD/build.ninja"
+  fi
   echo "${OPCIONES[*]}" > "$BUILD/.opciones-taller"
 fi
 paso "Compilando"
