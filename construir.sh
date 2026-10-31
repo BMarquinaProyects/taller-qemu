@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Compila el QEMU de Espressif con las capas de Taller y lo empaqueta.
+#
+#   ./construir.sh                 descarga el código base, aplica capas/, compila y empaqueta en dist/
+#   TARBALL=/ruta/src.tar.xz ./construir.sh    usa un tarball ya descargado
+#   TRABAJO=~/qemu-trabajo ./construir.sh      carpeta de trabajo (por defecto .trabajo/; en WSL conviene ~/…)
+#
+# Funciona en Linux (Ubuntu 24.04), WSL y MSYS2 MINGW64 (Windows).
+# La compilación es incremental: si la carpeta de trabajo ya existe, solo recompila lo que cambió.
+set -euo pipefail
+
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="$(tr -d '[:space:]' < "$AQUI/VERSION")"
+BASE="esp-develop-9.2.2-20260417"
+NOMBRE_SRC="qemu-esp_develop_9.2.2_20260417-src"
+SHA256="66015182274b9fda7d3c7f19e8f160e6e23947217cc149c7aa97e1586dfc6198"
+URL="https://github.com/espressif/qemu/releases/download/${BASE}/${NOMBRE_SRC}.tar.xz"
+
+TRABAJO="${TRABAJO:-$AQUI/.trabajo}"
+SALIDA="${SALIDA:-$AQUI/dist}"
+TARBALL="${TARBALL:-$TRABAJO/${NOMBRE_SRC}.tar.xz}"
+
+if [[ "${MSYSTEM:-}" == "MINGW64" ]]; then HOST="x86_64-w64-mingw32"; EXE=".exe"; else HOST="x86_64-linux-gnu"; EXE=""; fi
+paso() { printf '\n==> %s\n' "$*"; }
+
+mkdir -p "$TRABAJO" "$SALIDA"
+
+# 1. Código base (verificado)
+if [[ ! -f "$TARBALL" ]]; then
+  paso "Descargando $URL"
+  curl -fL --retry 3 -o "$TARBALL.parcial" "$URL" && mv "$TARBALL.parcial" "$TARBALL"
+fi
+echo "$SHA256  $TARBALL" | sha256sum -c -
+
+SRC="$TRABAJO/$NOMBRE_SRC"
+if [[ ! -f "$SRC/configure" ]]; then
+  paso "Extrayendo el código base"
+  tar -xJf "$TARBALL" -C "$TRABAJO"
+fi
+
+# 2. Capas de Taller encima (solo copia lo que cambió, para no forzar recompilaciones)
+paso "Aplicando capas/"
+( cd "$AQUI/capas" && find . -type f ) | while read -r f; do
+  if ! cmp -s "$AQUI/capas/$f" "$SRC/$f"; then
+    mkdir -p "$(dirname "$SRC/$f")"
+    cp "$AQUI/capas/$f" "$SRC/$f"
+    echo "   $f"
+  fi
+done
+
+# 3. Configurar (una vez) y compilar
+BUILD="$TRABAJO/build-$HOST"
+if [[ ! -f "$BUILD/build.ninja" ]]; then
+  paso "Configurando"
+  mkdir -p "$BUILD"
+  ( cd "$BUILD" && "$SRC/configure" \
+      --target-list=xtensa-softmmu \
+      --prefix=/ --bindir=bin --datadir=share \
+      --enable-gcrypt --enable-slirp \
+      --disable-sdl --disable-gtk --disable-vnc --disable-docs \
+      --disable-werror --disable-capstone --disable-user \
+      --disable-tools --disable-guest-agent )
+fi
+paso "Compilando"
+ninja -C "$BUILD" "qemu-system-xtensa${EXE}"
+
+# 4. Instalar en una carpeta temporal y empaquetar con la estructura del de Espressif: qemu/bin, qemu/share
+paso "Empaquetando"
+INST="$TRABAJO/instalar-$HOST"
+rm -rf "$INST"
+DESTDIR="$INST/qemu" ninja -C "$BUILD" install > /dev/null
+if [[ -n "$EXE" ]]; then
+  # DLL de MSYS2 que necesita el ejecutable
+  ldd "$INST/qemu/bin/qemu-system-xtensa.exe" | awk '/\/mingw64\//{print $3}' | sort -u | while read -r dll; do
+    cp "$dll" "$INST/qemu/bin/"
+  done
+fi
+cp "$AQUI/LICENSE" "$AQUI/AVISO.md" "$INST/qemu/"
+ARCHIVO="$SALIDA/qemu-taller-${VERSION}-${HOST}.tar.xz"
+tar -cJf "$ARCHIVO" -C "$INST" qemu
+echo "OK -> $ARCHIVO"
+echo "   binario: $INST/qemu/bin/qemu-system-xtensa${EXE}"
