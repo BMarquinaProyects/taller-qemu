@@ -35,7 +35,13 @@ echo "$SHA256  $TARBALL" | sha256sum -c -
 SRC="$TRABAJO/$NOMBRE_SRC"
 if [[ ! -f "$SRC/configure" ]]; then
   paso "Extrayendo el código base"
-  tar -xJf "$TARBALL" -C "$TRABAJO"
+  if [[ -n "$EXE" ]]; then
+    # MSYS2 no puede crear enlaces simbólicos: los pocos que quedan (subproyectos solo de Linux)
+    # se crean como accesos directos; roms/ y tests/lcitool/ no hacen falta para compilar.
+    MSYS=winsymlinks:lnk tar -xJf "$TARBALL" -C "$TRABAJO"       --exclude="$NOMBRE_SRC/roms" --exclude="$NOMBRE_SRC/tests/lcitool"
+  else
+    tar -xJf "$TARBALL" -C "$TRABAJO"
+  fi
 fi
 
 # 2. Capas de Taller encima (solo copia lo que cambió, para no forzar recompilaciones)
