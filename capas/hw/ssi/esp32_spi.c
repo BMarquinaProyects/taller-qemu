@@ -19,6 +19,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/ssi/ssi.h"
 #include "hw/ssi/esp32_spi.h"
+#include "hw/misc/taller_puente.h"
 #include "hw/misc/esp32_flash_enc.h"
 
 
@@ -181,6 +182,7 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
     esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
     esp32_spi_cs_set(s, 1);
+    taller_puente_spi_fin(s->index); /* Taller: una trama SPI por transacción */
 }
 
 /* Convert one of the hardware "bitlen" registers to a byte count */
@@ -275,7 +277,11 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
 
     case R_SPI_CMD_USR_MASK:
         maybe_encrypt_data(s);
-        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
+        /* Taller: en SPI2/SPI3 (propósito general) la fase de comando solo existe si el bit
+         * USR_COMMAND está activo, como en el hardware. La segunda condición es un apaño
+         * de Espressif para la flash (SPI0/SPI1) y en SPI2/3 añadía un byte 0x00 por transacción. */
+        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) ||
+            (s->index < 2 && FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN))) {
             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
             t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
         } else {
@@ -337,6 +343,7 @@ static void esp32_spi_init(Object *obj)
 }
 
 static Property esp32_spi_properties[] = {
+    DEFINE_PROP_UINT8("index", Esp32SpiState, index, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

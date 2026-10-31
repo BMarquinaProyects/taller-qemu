@@ -25,6 +25,8 @@
 #include "hw/qdev-properties.h"
 #include "hw/xtensa/esp32.h"
 #include "hw/misc/ssi_psram.h"
+#include "hw/misc/taller_puente.h"
+#include "chardev/char.h"
 #include "hw/sd/dwc_sdmmc.h"
 #include "core-esp32/core-isa.h"
 #include "qemu/datadir.h"
@@ -458,12 +460,25 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         const hwaddr spi_base[] = {
             DR_REG_SPI0_BASE, DR_REG_SPI1_BASE, DR_REG_SPI2_BASE, DR_REG_SPI3_BASE
         };
+        qdev_prop_set_uint8(DEVICE(&s->spi[i]), "index", i); /* Taller */
         qdev_realize(DEVICE(&s->spi[i]), &s->periph_bus, &error_fatal);
 
         esp32_soc_add_periph_device(sys_mem, &s->spi[i], spi_base[i]);
 
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi[i]), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_SPI0_INTR_SOURCE + i));
+    }
+
+    /* Taller: si existe el chardev "taller-puente", activar el puente y colgar un
+     * periférico taller.spi de SPI2 (HSPI) y SPI3 (VSPI). */
+    Chardev *puente = qemu_chr_find(TALLER_PUENTE_CHARDEV);
+    if (puente) {
+        taller_puente_iniciar(puente);
+        for (int i = 2; i <= 3; i++) {
+            DeviceState *periferico = qdev_new(TYPE_TALLER_SPI);
+            qdev_prop_set_uint8(periferico, "bus", i);
+            qdev_realize_and_unref(periferico, BUS(s->spi[i].spi), &error_fatal);
+        }
     }
 
     for (int i = 0; i < ESP32_I2C_COUNT; i++) {

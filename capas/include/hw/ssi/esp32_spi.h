@@ -31,6 +31,7 @@ typedef struct Esp32SpiState {
     uint32_t miso_dlen_reg;
     uint32_t pin_reg;
     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
+    uint8_t index; /* Taller: 0-3 (SPI0..SPI3), para el puente */
 } Esp32SpiState;
 
 

@@ -13,7 +13,7 @@ sudo apt install build-essential ninja-build pkg-config python3-venv flex bison 
 TRABAJO=~/qemu-trabajo ./construir.sh
 ```
 
-Windows: MSYS2 MINGW64 con los paquetes `mingw-w64-x86_64-{gcc,glib2,pixman,libslirp,libgcrypt,ninja,meson,python,pkgconf}`.
+Windows: MSYS2 **UCRT64** (MINGW64 ya no trae `libslirp`) con los paquetes `mingw-w64-ucrt-x86_64-{gcc,glib2,pixman,libslirp,libgcrypt,ninja,meson,python,pkgconf}`.
 Ver `.github/workflows/qemu.yml`.
 
 ## Protocolo del puente (v1)

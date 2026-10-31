@@ -18,6 +18,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32_gpio.h"
+#include "hw/misc/taller_puente.h"
 
 
 
@@ -60,6 +61,7 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
 {
     Esp32GpioState *s = ESP32_GPIO(opaque);
     uint32_t v = (uint32_t)value;
+    uint64_t out_antes = s->out, enable_antes = s->enable;
     switch (addr) {
     case A_GPIO_OUT:          s->out = con_baja(s->out, v); break;
     case A_GPIO_OUT_W1TS:     s->out |= v; break;
@@ -75,6 +77,9 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
     case A_GPIO_ENABLE1_W1TC: s->enable &= ~((uint64_t)(v & ESP32_GPIO_MASCARA_ALTA) << 32); break;
     default:
         break;
+    }
+    if (s->out != out_antes || s->enable != enable_antes) {
+        taller_puente_gpio(s->out, s->enable);
     }
 }
 

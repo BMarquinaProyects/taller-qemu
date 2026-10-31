@@ -26,6 +26,7 @@ jobs:
           Q=.trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa
           python3 pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
           python3 pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
+          python3 pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-linux
@@ -40,14 +41,14 @@ jobs:
       - uses: actions/checkout@v5
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
             make diffutils git tar xz
-            mingw-w64-x86_64-gcc mingw-w64-x86_64-glib2 mingw-w64-x86_64-pixman
-            mingw-w64-x86_64-libslirp mingw-w64-x86_64-libgcrypt mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-meson mingw-w64-x86_64-python mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-curl
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-glib2 mingw-w64-ucrt-x86_64-pixman
+            mingw-w64-ucrt-x86_64-libslirp mingw-w64-ucrt-x86_64-libgcrypt mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-meson mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-curl
       - name: Compilar
         run: bash construir.sh
       - name: Pruebas de humo
@@ -55,6 +56,7 @@ jobs:
           Q=.trabajo/instalar-x86_64-w64-mingw32/qemu/bin/qemu-system-xtensa.exe
           python pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
           python pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
+          python pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-windows

@@ -5,7 +5,7 @@
 #   TARBALL=/ruta/src.tar.xz ./construir.sh    usa un tarball ya descargado
 #   TRABAJO=~/qemu-trabajo ./construir.sh      carpeta de trabajo (por defecto .trabajo/; en WSL conviene ~/…)
 #
-# Funciona en Linux (Ubuntu 24.04), WSL y MSYS2 MINGW64 (Windows).
+# Funciona en Linux (Ubuntu 24.04), WSL y MSYS2 UCRT64 (Windows; MINGW64 ya no trae libslirp).
 # La compilación es incremental: si la carpeta de trabajo ya existe, solo recompila lo que cambió.
 set -euo pipefail
 
@@ -20,7 +20,7 @@ TRABAJO="${TRABAJO:-$AQUI/.trabajo}"
 SALIDA="${SALIDA:-$AQUI/dist}"
 TARBALL="${TARBALL:-$TRABAJO/${NOMBRE_SRC}.tar.xz}"
 
-if [[ "${MSYSTEM:-}" == "MINGW64" ]]; then HOST="x86_64-w64-mingw32"; EXE=".exe"; else HOST="x86_64-linux-gnu"; EXE=""; fi
+if [[ "${MSYSTEM:-}" == "UCRT64" || "${MSYSTEM:-}" == "MINGW64" ]]; then HOST="x86_64-w64-mingw32"; EXE=".exe"; else HOST="x86_64-linux-gnu"; EXE=""; fi
 paso() { printf '\n==> %s\n' "$*"; }
 
 mkdir -p "$TRABAJO" "$SALIDA"
@@ -72,7 +72,7 @@ rm -rf "${INST:?}"
 DESTDIR="$INST" ninja -C "$BUILD" install > /dev/null   # → $INST/qemu/bin, $INST/qemu/share
 if [[ -n "$EXE" ]]; then
   # DLL de MSYS2 que necesita el ejecutable
-  ldd "$INST/qemu/bin/qemu-system-xtensa.exe" | awk '/\/mingw64\//{print $3}' | sort -u | while read -r dll; do
+  ldd "$INST/qemu/bin/qemu-system-xtensa.exe" | awk -v p="${MSYSTEM_PREFIX:-/ucrt64}/" 'index($3, p) == 1 {print $3}' | sort -u | while read -r dll; do
     cp "$dll" "$INST/qemu/bin/"
   done
 fi
