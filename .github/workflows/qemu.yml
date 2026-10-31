@@ -25,6 +25,7 @@ jobs:
         run: |
           Q=.trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa
           python3 pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
+          python3 pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-linux
@@ -53,6 +54,7 @@ jobs:
         run: |
           Q=.trabajo/instalar-x86_64-w64-mingw32/qemu/bin/qemu-system-xtensa.exe
           python pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
+          python pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-windows

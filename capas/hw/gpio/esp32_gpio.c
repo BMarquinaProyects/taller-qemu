@@ -21,6 +21,20 @@
 
 
 
+/* Taller: los registros "1" (pines 32-39) usan solo 8 bits. */
+static uint32_t parte_baja(uint64_t v) { return (uint32_t)v; }
+static uint32_t parte_alta(uint64_t v) { return (uint32_t)(v >> 32) & ESP32_GPIO_MASCARA_ALTA; }
+static uint64_t con_baja(uint64_t v, uint32_t baja) { return (v & ~0xFFFFFFFFull) | baja; }
+static uint64_t con_alta(uint64_t v, uint32_t alta) {
+    return (v & 0xFFFFFFFFull) | ((uint64_t)(alta & ESP32_GPIO_MASCARA_ALTA) << 32);
+}
+
+/* Lo que ve el firmware al leer IN: su propio nivel en las salidas, el externo en las entradas. */
+static uint64_t esp32_gpio_entrada(Esp32GpioState *s)
+{
+    return (s->out & s->enable) | (s->in_externo & ~s->enable);
+}
+
 static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32GpioState *s = ESP32_GPIO(opaque);
@@ -29,7 +43,12 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
     case A_GPIO_STRAP:
         r = s->strap_mode;
         break;
-
+    case A_GPIO_OUT:     r = parte_baja(s->out); break;
+    case A_GPIO_OUT1:    r = parte_alta(s->out); break;
+    case A_GPIO_ENABLE:  r = parte_baja(s->enable); break;
+    case A_GPIO_ENABLE1: r = parte_alta(s->enable); break;
+    case A_GPIO_IN:      r = parte_baja(esp32_gpio_entrada(s)); break;
+    case A_GPIO_IN1:     r = parte_alta(esp32_gpio_entrada(s)); break;
     default:
         break;
     }
@@ -39,6 +58,24 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32_gpio_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+    uint32_t v = (uint32_t)value;
+    switch (addr) {
+    case A_GPIO_OUT:          s->out = con_baja(s->out, v); break;
+    case A_GPIO_OUT_W1TS:     s->out |= v; break;
+    case A_GPIO_OUT_W1TC:     s->out &= ~(uint64_t)v; break;
+    case A_GPIO_OUT1:         s->out = con_alta(s->out, v); break;
+    case A_GPIO_OUT1_W1TS:    s->out |= (uint64_t)(v & ESP32_GPIO_MASCARA_ALTA) << 32; break;
+    case A_GPIO_OUT1_W1TC:    s->out &= ~((uint64_t)(v & ESP32_GPIO_MASCARA_ALTA) << 32); break;
+    case A_GPIO_ENABLE:       s->enable = con_baja(s->enable, v); break;
+    case A_GPIO_ENABLE_W1TS:  s->enable |= v; break;
+    case A_GPIO_ENABLE_W1TC:  s->enable &= ~(uint64_t)v; break;
+    case A_GPIO_ENABLE1:      s->enable = con_alta(s->enable, v); break;
+    case A_GPIO_ENABLE1_W1TS: s->enable |= (uint64_t)(v & ESP32_GPIO_MASCARA_ALTA) << 32; break;
+    case A_GPIO_ENABLE1_W1TC: s->enable &= ~((uint64_t)(v & ESP32_GPIO_MASCARA_ALTA) << 32); break;
+    default:
+        break;
+    }
 }
 
 static const MemoryRegionOps uart_ops = {
@@ -49,6 +86,10 @@ static const MemoryRegionOps uart_ops = {
 
 static void esp32_gpio_reset_hold(Object *obj, ResetType type)
 {
+    Esp32GpioState *s = ESP32_GPIO(obj);
+    s->out = 0;
+    s->enable = 0;
+    s->in_externo = ~0ull;
 }
 
 static void esp32_gpio_realize(DeviceState *dev, Error **errp)

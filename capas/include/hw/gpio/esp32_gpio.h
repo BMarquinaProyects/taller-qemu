@@ -9,7 +9,25 @@
 #define ESP32_GPIO_GET_CLASS(obj)   OBJECT_GET_CLASS(Esp32GpioClass, obj, TYPE_ESP32_GPIO)
 #define ESP32_GPIO_CLASS(klass)     OBJECT_CLASS_CHECK(Esp32GpioClass, klass, TYPE_ESP32_GPIO)
 
+/* Registros de salida/habilitación/entrada (TRM del ESP32, cap. GPIO). Taller. */
+REG32(GPIO_OUT, 0x0004)
+REG32(GPIO_OUT_W1TS, 0x0008)
+REG32(GPIO_OUT_W1TC, 0x000C)
+REG32(GPIO_OUT1, 0x0010)
+REG32(GPIO_OUT1_W1TS, 0x0014)
+REG32(GPIO_OUT1_W1TC, 0x0018)
+REG32(GPIO_ENABLE, 0x0020)
+REG32(GPIO_ENABLE_W1TS, 0x0024)
+REG32(GPIO_ENABLE_W1TC, 0x0028)
+REG32(GPIO_ENABLE1, 0x002C)
+REG32(GPIO_ENABLE1_W1TS, 0x0030)
+REG32(GPIO_ENABLE1_W1TC, 0x0034)
 REG32(GPIO_STRAP, 0x0038)
+REG32(GPIO_IN, 0x003C)
+REG32(GPIO_IN1, 0x0040)
+
+/* GPIO 0-31 en los registros "sin 1"; GPIO 32-39 en los bits 0-7 de los registros "1". */
+#define ESP32_GPIO_MASCARA_ALTA 0xFFull
 
 #define ESP32_STRAP_MODE_FLASH_BOOT 0x12
 #define ESP32_STRAP_MODE_UART_BOOT  0x0f
@@ -20,6 +38,10 @@ typedef struct Esp32GpioState {
     MemoryRegion iomem;
     qemu_irq irq;
     uint32_t strap_mode;
+    /* Taller: bit n = GPIO n (0-39) */
+    uint64_t out;        /* nivel que el firmware escribe */
+    uint64_t enable;     /* 1 = el pin es salida */
+    uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
 } Esp32GpioState;
 
 typedef struct Esp32GpioClass {
