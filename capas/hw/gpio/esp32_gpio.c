@@ -22,6 +22,21 @@
 
 
 
+/* Taller: el GPIO del chip (uno por máquina), para que el puente pueda fijar entradas. */
+static Esp32GpioState *gpio_del_chip;
+
+void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel)
+{
+    if (!gpio_del_chip || pin > 39) {
+        return;
+    }
+    if (nivel) {
+        gpio_del_chip->in_externo |= 1ull << pin;
+    } else {
+        gpio_del_chip->in_externo &= ~(1ull << pin);
+    }
+}
+
 /* Taller: los registros "1" (pines 32-39) usan solo 8 bits. */
 static uint32_t parte_baja(uint64_t v) { return (uint32_t)v; }
 static uint32_t parte_alta(uint64_t v) { return (uint32_t)(v >> 32) & ESP32_GPIO_MASCARA_ALTA; }
@@ -105,6 +120,7 @@ static void esp32_gpio_init(Object *obj)
 {
     Esp32GpioState *s = ESP32_GPIO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    gpio_del_chip = s;
 
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);

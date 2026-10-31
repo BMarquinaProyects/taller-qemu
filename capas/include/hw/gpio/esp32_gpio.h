@@ -44,6 +44,9 @@ typedef struct Esp32GpioState {
     uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
 } Esp32GpioState;
 
+/* Taller: nivel que llega desde fuera a un pin de entrada (botones, sensores…). */
+void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel);
+
 typedef struct Esp32GpioClass {
     SysBusDeviceClass parent_class;
 } Esp32GpioClass;

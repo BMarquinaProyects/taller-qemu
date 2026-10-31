@@ -3,6 +3,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
 
   python pruebas/qemu_prueba.py <qemu-system-xtensa> humo   <firmware.bin> <marca>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> puente <puente_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> entrada <entrada_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -130,10 +131,8 @@ def puente(qemu: str, firmware: str) -> int:
     errores = []
     if "TALLER-OK puente" not in texto:
         errores.append("sin marca TALLER-OK puente en la UART")
-    if not tramas or tramas[0][0] != 1 or struct.unpack("<I", tramas[0][3])[0] != 1:
-        errores.append(f"la primera trama no es HOLA v1: {tramas[:1]}")
-    if any(v != 1 for _, v, _, _ in tramas):
-        errores.append("tramas con versión distinta de 1")
+    if not tramas or tramas[0][0] != 1 or struct.unpack("<I", tramas[0][3])[0] not in (1, 2):
+        errores.append(f"la primera trama no es HOLA: {tramas[:1]}")
     tiempos = [t for _, _, t, _ in tramas]
     if tiempos != sorted(tiempos):
         errores.append("t_ns decreciente")
@@ -158,8 +157,63 @@ def puente(qemu: str, firmware: str) -> int:
     return 1 if errores else 0
 
 
+TIPO_ENTRADA = 16
+
+
+def trama_entrada(pin: int, nivel: int) -> bytes:
+    return CABECERA.pack(TIPO_ENTRADA, 2, 2, 0) + bytes([pin, nivel])
+
+
+def esperar_en_uart(sock: socket.socket, buf: list, texto: str, timeout_s: float) -> bool:
+    """Lee la UART acumulando en buf[0] hasta que aparezca `texto` después de la posición inicial."""
+    inicio = len(buf[0])
+    fin = time.monotonic() + timeout_s
+    sock.settimeout(0.2)
+    while time.monotonic() < fin:
+        try:
+            trozo = sock.recv(4096)
+        except socket.timeout:
+            continue
+        if not trozo:
+            return False
+        buf[0] += trozo.decode(errors="replace")
+        if texto in buf[0][inicio:]:
+            return True
+    return False
+
+
+def entrada(qemu: str, firmware: str) -> int:
+    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (protocolo v2)."""
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
+    tramas: list = []
+    parar = threading.Event()
+    buf = [""]
+    pasos = []
+    try:
+        s_puente = conectar(p_puente, proc)
+        threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True).start()
+        s_uart = conectar(p_uart, proc)
+        pasos.append(("suelto=1", esperar_en_uart(s_uart, buf, "NIVEL=1", 30)))
+        s_puente.sendall(trama_entrada(15, 0))
+        pasos.append(("pulsado=0", esperar_en_uart(s_uart, buf, "NIVEL=0", 5)))
+        s_puente.sendall(trama_entrada(15, 1))
+        pasos.append(("soltado=1", esperar_en_uart(s_uart, buf, "NIVEL=1", 5)))
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        tmp.cleanup()
+    hola = [struct.unpack("<I", c)[0] for tp, _, _, c in tramas if tp == 1]
+    ok = all(r for _, r in pasos) and hola == [2]
+    print("pasos:", pasos, "HOLA:", hola)
+    print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
     if modo == "humo":
         sys.exit(humo(qemu, sys.argv[3], sys.argv[4]))
+    if modo == "entrada":
+        sys.exit(entrada(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))

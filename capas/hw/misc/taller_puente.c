@@ -11,12 +11,51 @@
 #include "hw/ssi/ssi.h"
 #include "hw/qdev-properties.h"
 #include "hw/misc/taller_puente.h"
+#include "hw/gpio/esp32_gpio.h"
 
 #define CARGA_MAX_SPI 4096
 #define BUSES_SPI 4
+#define CABECERA 12
 
 static CharBackend puente_fe;
 static bool puente_activo;
+
+/* Tramas que llegan del programa externo (protocolo v2): se acumulan hasta tener una entera. */
+static uint8_t entrada_buf[CABECERA + 256];
+static size_t entrada_len;
+
+static void procesar_trama_entrante(const uint8_t *t, uint16_t largo)
+{
+    if (t[0] == TALLER_TRAMA_ENTRADA && largo >= 2) {
+        esp32_gpio_fijar_entrada(t[CABECERA], t[CABECERA + 1] != 0);
+    }
+    /* otros tipos: se ignoran (compatibilidad con versiones futuras) */
+}
+
+static int puente_puede_leer(void *opaque)
+{
+    return sizeof(entrada_buf) - entrada_len;
+}
+
+static void puente_leer(void *opaque, const uint8_t *buf, int size)
+{
+    memcpy(entrada_buf + entrada_len, buf, size);
+    entrada_len += size;
+    while (entrada_len >= CABECERA) {
+        uint16_t largo = lduw_le_p(entrada_buf + 2);
+        size_t total = CABECERA + largo;
+        if (total > sizeof(entrada_buf)) {
+            entrada_len = 0; /* trama imposible: se descarta todo */
+            return;
+        }
+        if (entrada_len < total) {
+            return;
+        }
+        procesar_trama_entrante(entrada_buf, largo);
+        memmove(entrada_buf, entrada_buf + total, entrada_len - total);
+        entrada_len -= total;
+    }
+}
 
 /* Por bus: [0] = número de bus, [1..] = bytes MOSI acumulados de la transacción en curso. */
 static uint8_t spi_buf[BUSES_SPI][1 + CARGA_MAX_SPI];
@@ -40,6 +79,7 @@ void taller_puente_iniciar(Chardev *chr)
 {
     uint8_t version[4];
     qemu_chr_fe_init(&puente_fe, chr, &error_fatal);
+    qemu_chr_fe_set_handlers(&puente_fe, puente_puede_leer, puente_leer, NULL, NULL, NULL, NULL, true);
     puente_activo = true;
     stl_le_p(version, TALLER_PUENTE_VERSION);
     enviar(TALLER_TRAMA_HOLA, version, sizeof(version));

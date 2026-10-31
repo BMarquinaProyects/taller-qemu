@@ -16,7 +16,7 @@ TRABAJO=~/qemu-trabajo ./construir.sh
 Windows: MSYS2 **UCRT64** (MINGW64 ya no trae `libslirp`) con los paquetes `mingw-w64-ucrt-x86_64-{gcc,glib2,pixman,libslirp,libgcrypt,ninja,meson,python,pkgconf}`.
 Ver `.github/workflows/qemu.yml`.
 
-## Protocolo del puente (v1)
+## Protocolo del puente (v2)
 
 Con `-chardev socket,id=taller-puente,host=127.0.0.1,port=<p>,server=on,wait=on`, QEMU envía tramas
 little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=1, u16 longitud_carga, u64 t_ns`.
@@ -26,5 +26,6 @@ little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=1, u16 longitud
 | 1 HOLA | `u32 version_protocolo` |
 | 2 GPIO | `u64 niveles, u64 salidas` (bit n = GPIO n) |
 | 3 SPI  | `u8 bus` (2 = HSPI, 3 = VSPI) + bytes MOSI de una transacción |
+| 16 ENTRADA (hacia QEMU) | `u8 pin, u8 nivel`: nivel externo de un pin de entrada (botones, sensores) |
 
 Sin ese chardev, QEMU se comporta como el de Espressif.
