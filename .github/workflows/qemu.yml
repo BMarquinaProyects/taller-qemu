@@ -27,6 +27,7 @@ jobs:
           python3 pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
           python3 pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
           python3 pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
+          python3 pruebas/qemu_prueba.py $Q entrada pruebas/entrada_prueba.flash.bin
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-linux
@@ -57,6 +58,7 @@ jobs:
           python pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
           python pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
           python pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
+          python pruebas/qemu_prueba.py $Q entrada pruebas/entrada_prueba.flash.bin
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-windows
