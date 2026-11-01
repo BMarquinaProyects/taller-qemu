@@ -6,6 +6,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> entrada <entrada_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> pwm <pwm_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> analogico <analogico_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> i2c <i2c_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -135,7 +136,7 @@ def puente(qemu: str, firmware: str) -> int:
     if "TALLER-OK puente" not in texto:
         errores.append("sin marca TALLER-OK puente en la UART")
     if (not tramas or tramas[0][0] != 1 or len(tramas[0][3]) != 4
-            or struct.unpack("<I", tramas[0][3])[0] not in (1, 2, 3)):
+            or struct.unpack("<I", tramas[0][3])[0] not in (1, 2, 3, 4)):
         errores.append(f"la primera trama no es HOLA: {tramas[:1]}")
     tiempos = [t for _, _, t, _ in tramas]
     if tiempos != sorted(tiempos):
@@ -171,6 +172,72 @@ def trama_entrada(pin: int, nivel: int) -> bytes:
 
 def trama_analogico(gpio: int, valor: int) -> bytes:
     return CABECERA.pack(TIPO_ANALOGICO, 3, 3, 0) + struct.pack("<BH", gpio, valor)
+
+
+def trama_i2c_dispositivo(bus: int, direccion: int, activo: bool) -> bytes:
+    return CABECERA.pack(18, 4, 3, 0) + bytes([bus, direccion, int(activo)])
+
+
+def trama_i2c_registros(bus: int, direccion: int, registro: int, datos: bytes) -> bytes:
+    if len(datos) > 240:
+        raise ValueError("I2C_REGISTROS admite hasta 240 bytes por trama")
+    carga = bytes([bus, direccion, registro]) + datos
+    return CABECERA.pack(19, 4, len(carga), 0) + carga
+
+
+def comprobar_i2c(tramas: list, texto: str) -> list[str]:
+    """Exige HOLA v4, una sola dirección, lectura del espejo y escritura exacta."""
+    errores = []
+    if not tramas or tramas[0][:2] != (1, 4) or tramas[0][3] != struct.pack("<I", 4):
+        errores.append(f"la primera trama no es HOLA versión 4: {tramas[:1]}")
+    encontrados = re.findall(r"^ENCONTRADO[^\r\n]*", texto, re.MULTILINE)
+    if encontrados != ["ENCONTRADO 0x3C"]:
+        errores.append(f"escaneo I2C incorrecto: {encontrados}")
+    for linea in ("LEIDO=60,61", "TALLER-OK i2c"):
+        if not re.search(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE):
+            errores.append(f"sin línea {linea} en la UART")
+    if not any(tp == 5 and v == 4 and c == b"\x00\x3c\x00\xaf"
+               for tp, v, _, c in tramas):
+        errores.append("sin I2C_ESCRITURA(0, 0x3C, 00 AF)")
+    return errores
+
+
+def i2c(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
+    tramas: list = []
+    parar = threading.Event()
+    s_puente = s_uart = hilo = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        # La conexión UART deja avanzar la inicialización de la máquina y HOLA.
+        s_uart = conectar(p_uart, proc)
+        fin = time.monotonic() + 15
+        while not tramas and time.monotonic() < fin and proc.poll() is None:
+            time.sleep(0.01)
+        if tramas and tramas[0][:2] == (1, 4) and tramas[0][3] == struct.pack("<I", 4):
+            s_puente.sendall(trama_i2c_dispositivo(0, 0x3c, True) +
+                             trama_i2c_registros(0, 0x3c, 0xd0, b"\x60\x61"))
+            texto = leer_uart_hasta(s_uart, ["TALLER-OK i2c", "TALLER-FALLO"], 60)
+            time.sleep(0.5)
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        tmp.cleanup()
+
+    errores = comprobar_i2c(tramas, texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO i2c\n" + texto[-1000:] if errores else "OK i2c")
+    return 1 if errores else 0
 
 
 def esperar_analogico(sock: socket.socket, buf: list, minimo: int, maximo: int,
@@ -212,7 +279,7 @@ def esperar_en_uart(sock: socket.socket, buf: list, texto: str, timeout_s: float
 
 
 def entrada(qemu: str, firmware: str) -> int:
-    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (v2/v3)."""
+    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (v2/v3/v4)."""
     tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
     tramas: list = []
     parar = threading.Event()
@@ -233,7 +300,7 @@ def entrada(qemu: str, firmware: str) -> int:
         proc.wait()
         tmp.cleanup()
     hola = [struct.unpack("<I", c)[0] for tp, _, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola in ([2], [3])
+    ok = all(r for _, r in pasos) and hola in ([2], [3], [4])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
     return 0 if ok else 1
@@ -269,25 +336,26 @@ def analogico(qemu: str, firmware: str) -> int:
         tmp.cleanup()
 
     hola = [(v, c) for tp, v, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola == [(3, struct.pack("<I", 3))]
+    ok = all(r for _, r in pasos) and hola in (
+        [(3, struct.pack("<I", 3))], [(4, struct.pack("<I", 4))])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK analogico" if ok else "FALLO analogico\n" + buf[0][-600:])
     return 0 if ok else 1
 
 
 def comprobar_pwm(tramas: list, texto: str) -> list[str]:
-    """Exige la versión 3 y una muestra del servo: 50 Hz, ciclo del 5 %."""
+    """Exige versión 3/4 y una muestra del servo: 50 Hz, ciclo del 5 %."""
     errores = []
     if "TALLER-OK pwm" not in texto:
         errores.append("sin marca TALLER-OK pwm en la UART")
-    if (not tramas or tramas[0][0] != 1 or tramas[0][1] != 3
-            or tramas[0][3] != struct.pack("<I", 3)):
-        errores.append(f"la primera trama no es HOLA versión 3: {tramas[:1]}")
+    if (not tramas or tramas[0][0] != 1 or tramas[0][1] not in (3, 4)
+            or tramas[0][3] != struct.pack("<I", tramas[0][1])):
+        errores.append(f"la primera trama no es HOLA versión 3/4: {tramas[:1]}")
     coincide = False
     for tipo, version, _, carga in tramas:
         if tipo != 4:
             continue
-        if version != 3 or len(carga) != 9:
+        if version not in (3, 4) or len(carga) != 9:
             errores.append(f"trama PWM inválida: versión {version}, {len(carga)} bytes")
             continue
         gpio, frecuencia_mhz, ciclo_ppm = struct.unpack("<BII", carga)
@@ -342,4 +410,6 @@ if __name__ == "__main__":
         sys.exit(pwm(qemu, sys.argv[3]))
     if modo == "analogico":
         sys.exit(analogico(qemu, sys.argv[3]))
+    if modo == "i2c":
+        sys.exit(i2c(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))

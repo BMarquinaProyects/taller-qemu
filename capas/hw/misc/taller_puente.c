@@ -13,8 +13,10 @@
 #include "hw/misc/taller_puente.h"
 #include "hw/gpio/esp32_gpio.h"
 #include "hw/misc/esp32_sens.h"
+#include "hw/i2c/taller_i2c.h"
 
 #define CARGA_MAX_SPI 4096
+#define CARGA_MAX_I2C 4096
 #define BUSES_SPI 4
 #define CABECERA 12
 
@@ -22,6 +24,7 @@ static CharBackend puente_fe;
 static bool puente_activo;
 
 /* Tramas que llegan del programa externo: se acumulan hasta tener una entera. */
+/* I2C_REGISTROS necesita 12 + 3 + 240 = 255 bytes; aquí caben 268. */
 static uint8_t entrada_buf[CABECERA + 256];
 static size_t entrada_len;
 
@@ -38,6 +41,13 @@ static void procesar_trama_entrante(const uint8_t *t, uint16_t largo)
                 break;
             }
         }
+    } else if (t[0] == TALLER_TRAMA_I2C_DISPOSITIVO && largo == 3) {
+        taller_i2c_dispositivo(t[CABECERA], t[CABECERA + 1],
+                              t[CABECERA + 2] != 0);
+    } else if (t[0] == TALLER_TRAMA_I2C_REGISTROS &&
+               largo >= 3 && largo <= 3 + 240) {
+        taller_i2c_registros(t[CABECERA], t[CABECERA + 1], t[CABECERA + 2],
+                            t + CABECERA + 3, largo - 3);
     }
     /* otros tipos: se ignoran (compatibilidad con versiones futuras) */
 }
@@ -98,6 +108,30 @@ void taller_puente_iniciar(Chardev *chr)
 bool taller_puente_activo(void)
 {
     return puente_activo;
+}
+
+void taller_puente_i2c_escritura(uint8_t bus, uint8_t direccion,
+                                  const uint8_t *datos, size_t largo)
+{
+    uint8_t carga[CARGA_MAX_I2C];
+
+    if (!puente_activo) {
+        return;
+    }
+    /* Conservar el orden frente a los bytes SPI acumulados. */
+    for (int b = 0; b < BUSES_SPI; b++) {
+        taller_puente_spi_fin(b);
+    }
+    carga[0] = bus;
+    carga[1] = direccion;
+    while (largo) {
+        size_t n = MIN(largo, sizeof(carga) - 2);
+
+        memcpy(carga + 2, datos, n);
+        enviar(TALLER_TRAMA_I2C_ESCRITURA, carga, 2 + n);
+        datos += n;
+        largo -= n;
+    }
 }
 
 void taller_puente_spi_fin(uint8_t bus)

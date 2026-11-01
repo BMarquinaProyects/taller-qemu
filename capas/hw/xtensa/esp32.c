@@ -18,6 +18,7 @@
 #include "hw/loader.h"
 #include "hw/sysbus.h"
 #include "hw/i2c/esp32_i2c.h"
+#include "hw/i2c/taller_i2c.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
 #include "hw/irq.h"
@@ -479,7 +480,6 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
      * periférico taller.spi de SPI2 (HSPI) y SPI3 (VSPI). */
     Chardev *puente = qemu_chr_find(TALLER_PUENTE_CHARDEV);
     if (puente) {
-        taller_puente_iniciar(puente);
         for (int i = 2; i <= 3; i++) {
             DeviceState *periferico = qdev_new(TYPE_TALLER_SPI);
             qdev_prop_set_uint8(periferico, "bus", i);
@@ -497,6 +497,13 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
 
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->i2c[i]), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE + i));
+        if (puente) {
+            taller_i2c_preparar(s->i2c[i].bus, i);
+        }
+    }
+    if (puente) {
+        /* Ambos espejos deben existir antes de recibir altas tras HOLA. */
+        taller_puente_iniciar(puente);
     }
 
     /* TWAI model passes intmatrix IRQs to the SJA1000 controller model
@@ -848,7 +855,10 @@ static void esp32_machine_init(MachineState *machine)
         esp32_machine_init_psram(ss, (uint32_t) (machine->ram_size / MiB));
     }
 
-    esp32_machine_init_i2c(ss);
+    if (!taller_puente_activo()) {
+        /* El TMP105 de demostración no debe aparecer entre las piezas de Taller. */
+        esp32_machine_init_i2c(ss);
+    }
 
     esp32_machine_init_openeth(ss);
 
