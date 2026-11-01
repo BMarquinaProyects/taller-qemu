@@ -10,6 +10,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> armado <armado_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> rmt <rmt_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> spi_dma <micropython.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_gpio <c3_gpio_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -88,6 +89,107 @@ def lanzar(qemu: str, firmware: str, con_puente: bool):
     cmd += ["-serial", f"tcp:127.0.0.1:{p_uart},server=on,wait=on", "-icount", "shift=2,align=off,sleep=on"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return tmp, proc, p_uart, p_puente
+
+
+def lanzar_c3(qemu: str, firmware: str):
+    """C3: flash completa desde 0x0; eFuse v0.3 creada en RAM por Espressif."""
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        imagen = Path(tmp.name) / "c3.flash.bin"
+        shutil.copyfile(firmware, imagen)
+        if imagen.stat().st_size != 4 * 1024 * 1024:
+            raise ValueError("c3_gpio requiere una flash completa de 4 MiB")
+        p_uart, p_puente = puerto_libre(), puerto_libre()
+        cmd = [qemu, "-machine", "esp32c3", "-display", "none", "-monitor", "none",
+               "-drive", f"file={imagen},if=mtd,format=raw",
+               "-global", "driver=timer.esp32c3.timg,property=wdt_disable,value=true",
+               "-chardev", f"socket,id=taller-puente,host=127.0.0.1,port={p_puente},server=on,wait=on",
+               "-serial", f"tcp:127.0.0.1:{p_uart},server=on,wait=on",
+               "-icount", "shift=2,align=off,sleep=on"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except BaseException:
+        tmp.cleanup()
+        raise
+    return tmp, proc, p_uart, p_puente
+
+
+def comprobar_c3_gpio(tramas: list, texto: str) -> list[str]:
+    """Exige HOLA v6, tres pulsos GPIO8 habilitados y lectura GPIO9 1→0."""
+    errores = []
+    if not tramas or not es_hola(tramas[0], 6):
+        errores.append("sin HOLA v6")
+    lineas = ("C3-ANTES=1", "C3-DESPUES=0", "TALLER-OK c3")
+    posiciones = []
+    for linea in lineas:
+        coincidencias = list(re.finditer(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE))
+        if len(coincidencias) != 1:
+            errores.append(f"sin línea única {linea}")
+        else:
+            posiciones.append(coincidencias[0].start())
+    if posiciones != sorted(posiciones) or "TALLER-FALLO" in texto:
+        errores.append("lecturas UART fuera de orden o fallo del firmware")
+    tiempos = [t for _, _, t, _ in tramas]
+    if tiempos != sorted(tiempos):
+        errores.append("t_ns decreciente")
+    niveles = []
+    ultimo_habilitado = False
+    for tipo, version, _, carga in tramas:
+        if version != 6:
+            errores.append("trama con versión distinta de 6")
+        if tipo != 2:
+            continue
+        if len(carga) != 16:
+            errores.append("trama GPIO con longitud distinta de 16")
+            continue
+        out, enable = struct.unpack("<QQ", carga)
+        if (out | enable) >> 22:
+            errores.append("GPIO C3 fuera de 0..21")
+        ultimo_habilitado = bool(enable & (1 << 8))
+        if ultimo_habilitado:
+            nivel = int(bool(out & (1 << 8)))
+            if not niveles or niveles[-1] != nivel:
+                niveles.append(nivel)
+        elif niveles:
+            errores.append("GPIO8 dejó de ser salida durante la prueba")
+    if niveles != [0, 1, 0, 1, 0, 1, 0] or not ultimo_habilitado:
+        errores.append(f"GPIO8: se esperaban tres pulsos completos, recibidos {niveles}")
+    return errores
+
+
+def c3_gpio(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["C3-ANTES=1", "TALLER-FALLO"], 60)
+        if re.search(r"^C3-ANTES=1\r?$", texto, re.MULTILINE):
+            # ENTRADA v6; solo se inyecta después de observar la lectura inicial.
+            s_puente.sendall(CABECERA.pack(16, 6, 2, 0) + bytes([9, 0]))
+            texto += leer_uart_hasta(s_uart, ["TALLER-OK c3", "TALLER-FALLO"], 30)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_c3_gpio(tramas, texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO c3_gpio\n" + texto[-1500:] if errores else
+          "OK c3_gpio: GPIO8 tres pulsos; GPIO9 INPUT_PULLUP 1→0; HOLA v6")
+    return 1 if errores else 0
 
 
 def humo(qemu: str, firmware: str, marca: str) -> int:
@@ -764,6 +866,8 @@ def spi_dma(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
+    if modo == "c3_gpio":
+        sys.exit(c3_gpio(qemu, sys.argv[3]))
     if modo == "humo":
         sys.exit(humo(qemu, sys.argv[3], sys.argv[4]))
     if modo == "entrada":

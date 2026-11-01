@@ -158,7 +158,8 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
   'esp32c3_jtag.c',
   'esp32c3_rtc_cntl.c',
   'esp_hmac.c',
-  'esp32c3_hmac.c'
+  'esp32c3_hmac.c',
+  'taller_puente.c'
 ))
 
 system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(

@@ -58,7 +58,7 @@ done
 BUILD="$TRABAJO/build-$HOST"
 INST="$TRABAJO/instalar-$HOST"
 # Prefijo no raíz: con --prefix=/ QEMU no encuentra share/qemu (ROM del ESP32) al reubicarse.
-OPCIONES=(--target-list=xtensa-softmmu --prefix=/qemu --bindir=bin --datadir=share
+OPCIONES=(--target-list=xtensa-softmmu,riscv32-softmmu --prefix=/qemu --bindir=bin --datadir=share
           --enable-gcrypt --enable-slirp
           --disable-sdl --disable-gtk --disable-vnc --disable-docs
           --disable-werror --disable-capstone --disable-user
@@ -68,7 +68,7 @@ if [[ -n "$EXE" ]]; then
   # Con enlazado dinámico, la glib de MSYS2 da "multiple definition of g_main_context_ref" (E-022).
   # Prefijo = la carpeta de instalación con ruta de Windows: con DESTDIR, MSYS2 convierte /qemu
   # en una ruta de Windows y la instalación acaba en otro sitio (E-023). QEMU es reubicable.
-  OPCIONES=(--target-list=xtensa-softmmu --prefix="$(cygpath -m "$INST")/qemu" --bindir=bin --datadir=share
+  OPCIONES=(--target-list=xtensa-softmmu,riscv32-softmmu --prefix="$(cygpath -m "$INST")/qemu" --bindir=bin --datadir=share
             --static --without-default-features
             --enable-gcrypt --enable-pixman --enable-slirp --enable-stack-protector)
 fi
@@ -86,7 +86,7 @@ if [[ ! -f "$BUILD/build.ninja" || "$(cat "$BUILD/.opciones-taller" 2>/dev/null)
   echo "${OPCIONES[*]}" > "$BUILD/.opciones-taller"
 fi
 paso "Compilando"
-ninja -C "$BUILD" "qemu-system-xtensa${EXE}"
+ninja -C "$BUILD" "qemu-system-xtensa${EXE}" "qemu-system-riscv32${EXE}"
 
 # 4. Instalar en una carpeta temporal y empaquetar con la estructura del de Espressif: qemu/bin, qemu/share
 paso "Empaquetando"
@@ -98,7 +98,7 @@ else
 fi
 if [[ -n "$EXE" ]]; then
   # DLL de MSYS2 que necesita el ejecutable
-  ldd "$INST/qemu/bin/qemu-system-xtensa.exe" | awk -v p="${MSYSTEM_PREFIX:-/ucrt64}/" 'index($3, p) == 1 {print $3}' | sort -u | while read -r dll; do
+  ldd "$INST/qemu/bin/qemu-system-xtensa.exe" "$INST/qemu/bin/qemu-system-riscv32.exe" | awk -v p="${MSYSTEM_PREFIX:-/ucrt64}/" 'index($3, p) == 1 {print $3}' | sort -u | while read -r dll; do
     cp "$dll" "$INST/qemu/bin/"
   done
 fi
@@ -107,3 +107,4 @@ ARCHIVO="$SALIDA/qemu-taller-${VERSION}-${HOST}.tar.xz"
 tar -cJf "$ARCHIVO" -C "$INST" qemu
 echo "OK -> $ARCHIVO"
 echo "   binario: $INST/qemu/bin/qemu-system-xtensa${EXE}"
+echo "   binario: $INST/qemu/bin/qemu-system-riscv32${EXE}"

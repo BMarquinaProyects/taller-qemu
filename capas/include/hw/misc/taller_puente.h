@@ -33,7 +33,7 @@
  *              sin alta no hay ACK; REGISTROS no mueve el puntero del firmware
  *  20 ENTRADA_ARMADA (desde v5): u8 pin_disparo, u8 flanco (0=bajada, 1=subida),
  *              u32 minimo_ns, u8 pin_salida, u16 n, n*(u32 espera_ns, u8 nivel).
- *              Sin relleno: 9+5*n bytes; GPIO 0..39, nivel 0/1, n<=200.
+ *              Sin relleno: 9+5*n bytes; GPIO 0..39 (C3: 0..21), nivel 0/1, n<=200.
  *              n=0 desarma; máximo ocho ranuras, una por pin_disparo.
  *              Cada espera se cuenta desde el paso anterior (primera: flanco).
  *              Vigila enable ? out : 1; inicial alto desde t=0. El flanco exige
@@ -42,6 +42,8 @@
  *              nunca a los pasos en curso. Una carga inválida se ignora entera.
  *
  * Se activa solo si existe un chardev con id "taller-puente".
+ * Cada máquina recibe sus cargas mediante TallerPuenteReceptor. El C3 solo
+ * admite ENTRADA y ENTRADA_ARMADA en esta fase; ADC/I2C siguen en el clásico.
  *
  * Copyright (c) 2026 Taller. Licencia: GPL-2.0-or-later.
  */
@@ -68,7 +70,11 @@ enum {
     TALLER_TRAMA_ENTRADA_ARMADA = 20,
 };
 
-void taller_puente_iniciar(Chardev *chr);
+/* Receptor propio de la máquina; recibe una carga completa, sin cabecera. */
+typedef void (*TallerPuenteReceptor)(void *opaque, uint8_t tipo,
+                                    const uint8_t *datos, size_t largo);
+void taller_puente_iniciar(Chardev *chr, TallerPuenteReceptor receptor,
+                           void *opaque);
 bool taller_puente_activo(void);
 /* Vuelca antes cualquier SPI pendiente, para que el orden sea el real. */
 void taller_puente_gpio(uint64_t niveles, uint64_t salidas);

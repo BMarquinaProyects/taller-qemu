@@ -2,6 +2,7 @@
 # Ejecuta las pruebas de humo con el binario indicado (por defecto, el de la compilación local en WSL).
 set -o pipefail
 Q="${1:-$HOME/qemu-trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa}"
+Q_C3="${2:-${QEMU_C3:-${Q/qemu-system-xtensa/qemu-system-riscv32}}}"
 cd "$(dirname "$0")/.."
 r=0
 python3 pruebas/qemu_prueba.py "$Q" humo pruebas/taller_ok.flash.bin "TALLER-OK arduino" | head -3 || r=1
@@ -20,4 +21,5 @@ if [[ -f "$MPY" || -n "${MICROPYTHON_FLASH:-}" ]]; then
 else
   echo 'OMITIDA spi_dma: preparar pruebas/micropython.flash.bin (ver README)'
 fi
+python3 pruebas/qemu_prueba.py "$Q_C3" c3_gpio pruebas/c3_gpio_prueba.flash.bin || r=1
 exit $r

@@ -98,8 +98,16 @@ class PruebaArmado(unittest.TestCase):
         # Compila el receptor REAL aislado de QOM/chardev. Solo las llamadas a
         # otros periféricos se sustituyen; el armado usa también su lógica real.
         receptor = fuente[fuente.index("/* Tramas que llegan"):fuente.index("/* Por bus:")]
+        clasico = (raiz / "capas/hw/xtensa/esp32.c").read_text(encoding="utf-8")
+        receptor_clasico = clasico[clasico.index("static void esp32_taller_recibir"):
+                                   clasico.index("static void esp32_soc_realize")]
+        c3 = (raiz / "capas/hw/riscv/esp32c3.c").read_text(encoding="utf-8")
+        receptor_c3 = c3[c3.index("static void esp32c3_taller_recibir"):
+                         c3.index("static void esp32c3_machine_init")]
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "puente_receptor.h").write_text(receptor, encoding="utf-8")
+            Path(tmp, "clasico_receptor.h").write_text(receptor_clasico, encoding="utf-8")
+            Path(tmp, "c3_receptor.h").write_text(receptor_c3, encoding="utf-8")
             exe = Path(tmp) / "receptor"
             subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror",
                             "-Wno-unused-parameter", "-I", str(raiz / "capas/include"),

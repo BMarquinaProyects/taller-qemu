@@ -1,6 +1,6 @@
 # taller-qemu
 
-QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) que usa
+QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) y ESP32-C3 con GPIO conectado al puente, que usa
 **Taller**, un simulador de placas y componentes. Ver `AVISO.md` para el origen y los cambios.
 
 ## Compilar
@@ -15,6 +15,98 @@ TRABAJO=~/qemu-trabajo ./construir.sh
 
 Windows: MSYS2 **UCRT64** (MINGW64 ya no trae `libslirp`) con los paquetes `mingw-w64-ucrt-x86_64-{gcc,glib2,pixman,libslirp,libgcrypt,ninja,meson,python,pkgconf}`.
 Ver `.github/workflows/qemu.yml`.
+
+`construir.sh` genera y empaqueta **qemu-system-xtensa** y **qemu-system-riscv32**
+(también en Windows). Si el directorio de trabajo tenía solo Xtensa, se vuelve a
+configurar para añadir RISC-V32; esa primera compilación necesita generar sus objetos.
+
+## ESP32-C3: GPIO y puente (fase 6d, paso 1)
+
+Usar **qemu-system-riscv32 -machine esp32c3**. El mismo chardev
+`taller-puente` activa HOLA y tramas GPIO **v6**, sin cambiar el protocolo ni la
+versión de publicación. Bit n significa GPIO n también en el C3. ENTRADA y
+ENTRADA_ARMADA llegan al GPIO de la máquina seleccionada mediante un receptor
+propio; las rutas GPIO, ADC1 e I2C del ESP32 clásico se conservan.
+
+El modelo C3 tiene **22 GPIO (0..21)**. OUT (`0x04`), ENABLE (`0x20`),
+IN (`0x3c`) y sus W1TS/W1TC usan solamente esos 22 bits. `GPIO_PINn_REG`
+está en **`0x74 + 4·n`**: conserva lo escrito y su bit 2, PAD_DRIVER,
+activa drenador abierto. IN devuelve el nivel propio en salida push-pull,
+el externo en entrada y el AND de ambos en salida de drenador abierto.
+`FUNCn_OUT_SEL_CFG` se conserva en **`0x554 + 4·n`**, con señal software
+128 al reset. Los offsets y PAD_DRIVER se contrastaron con `gpio_reg.h`,
+`gpio_ll.h` y `gpio_sig_map.h` del core Arduino ESP32 3.3.12.
+
+Los trenes reutilizan `taller_armado.h`: ocho ranuras, hasta 200 pasos,
+temporizadores virtuales, DISPARO y reglas de rearme/reset del clásico.
+Ambos pines del programa deben pertenecer a `0..21`; los demás se ignoran
+antes de modificar las ranuras. ENTRADA también ignora pines ajenos al C3.
+
+Inventario de la máquina base `esp-develop-9.2.2-20260417` y trabajo pendiente:
+
+| Pieza | Estado en C3 |
+|---|---|
+| GPIO | Salida, entrada externa, drenador abierto y trenes conectados al puente. Sin IRQ GPIO ni filtros. |
+| IO_MUX / matriz GPIO | IO_MUX no está emulado: lecturas cero y escrituras ignoradas. PINn y selección de salida conservan valores; sin rutas periféricas ni inversión. La entrada externa empieza alta, como en el clásico; INPUT_PULLUP funciona con ese reposo, sin simular resistencias ni INPUT_PULLDOWN. |
+| Matriz IRQ | El original ya guarda `irq_levels`, aplica OR por línea y recalcula líneas vieja/nueva al reasignar. Conserva prioridad, umbral y habilitación; no tiene el fallo corregido del clásico. La selección de IRQ por flanco no está emulada. No se sustituye este archivo. |
+| UART y temporizadores | Dos UART con FIFO/timeout/IRQ; dos TIMG con T0 y watchdog; SYSTIMER con dos contadores y tres alarmas. Se conservan los modelos de Espressif. |
+| LEDC | Pendiente: cuatro timers, seis canales LS y señales 45..50; necesita registros/relojes C3 y resolución de la matriz de salida. |
+| ADC | Pendiente: ADC1 tiene cinco canales en GPIO0..4; ADC2, uno en GPIO5. Hace falta controlador C3 y nueva correspondencia de ANALOGICO; no sirve SENS del clásico. |
+| I2C | Pendiente: un controlador externo; reutilización del espejo del puente tras adaptar registros/IRQ y conectar bus 0. |
+| RMT | Pendiente: dos canales TX y dos RX, 48 palabras por canal; necesita adaptar registros/RAM/IRQ y señales de salida 51/52. |
+| SPI | SPI1 emula la flash; no hay SPI2 de usuario conectado al puente. GDMA ya existe en la base, pero no equivale al DMA SPI del clásico: SPI2/GDMA y sus rutas quedan pendientes. |
+
+Las capacidades pendientes se contrastaron con `soc_caps.h`, `adc_channel.h`
+y `gpio_sig_map.h` del mismo core. En esta fase, ANALOGICO y las tramas I2C
+se ignoran en la máquina C3.
+
+### Prueba C3
+
+`pruebas/c3_gpio_prueba/c3_gpio_prueba.ino` produce tres pulsos completos en
+GPIO8, lee GPIO9 con INPUT_PULLUP, espera ENTRADA(9, 0), vuelve a leer y termina
+con `TALLER-OK c3`. El verificador exige HOLA v6, niveles/salidas limitados a
+22 bits, tres pulsos habilitados, tiempos no decrecientes y las líneas únicas
+`C3-ANTES=1`, `C3-DESPUES=0`, `TALLER-OK c3`, en ese orden.
+
+Imagen completa de **4 MiB**, bootloader en **0x0**, particiones en `0x8000`,
+boot_app0 en `0xe000` y aplicación en `0x10000`. Se compiló con CLI 1.5.1 y
+core 3.3.12, DIO/40 MHz y USB CDC desactivado para usar UART0:
+
+```powershell
+$cli = "$env:APPDATA\dev.taller.app\arduino-cli\1.5.1\arduino-cli.exe"
+$config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
+& $cli --config-file $config board listall esp32c3
+& $cli --config-file $config compile `
+  --fqbn 'esp32:esp32:esp32c3:FlashMode=dio,FlashFreq=40,CDCOnBoot=default' `
+  --build-path "$PWD\pruebas\c3_gpio_prueba\build" pruebas/c3_gpio_prueba
+if ($LASTEXITCODE -ne 0) { throw 'Falló la compilación C3' }
+Copy-Item pruebas/c3_gpio_prueba/build/c3_gpio_prueba.ino.merged.bin pruebas/c3_gpio_prueba.flash.bin
+```
+
+SHA-256 de la imagen incluida:
+`71a31f166b7f8aff0027f8cf6080a7c72bae5ad6181bd21103ddca4df75150b2`.
+El lanzador usa una copia temporal de la flash. No carga la eFuse ECO3 del
+clásico: el modelo C3 crea su eFuse en RAM con revisión **v0.3** y versión
+de bloque **1.3** si no recibe fichero. Desactiva los watchdog de TIMG con
+`timer.esp32c3.timg.wdt_disable=true` y conserva `-icount shift=2,align=off,sleep=on`.
+La instalación debe incluir `share/esp32c3-rom.bin` junto al resto de ROM de QEMU.
+
+```sh
+python3 -m unittest discover -s pruebas -p '*_unitarias.py'
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_gpio pruebas/c3_gpio_prueba.flash.bin
+bash pruebas/todas.sh /ruta/qemu-system-xtensa /ruta/qemu-system-riscv32
+```
+
+`todas.sh` mantiene las once llamadas previas y añade C3 como duodécima.
+Sin segundo argumento, busca `qemu-system-riscv32` junto al Xtensa; también
+admite `QEMU_C3=/ruta/binario`. La omisión opcional de MicroPython sigue igual.
+Las unitarias ejecutan el GPIO C3 real aislado, sus trenes/reset, el parser y
+los receptores reales de ambas máquinas, además de comprobar el verificador.
+Se compiló Arduino y se comprobaron las cuatro unidades modificadas con
+cabeceras reales de QEMU. **Pendientes enlace y ejecución real de C3 y de
+las once pruebas previas con los binarios recompilados**: aquí no se compiló
+QEMU entero ni había un ejecutable RISC-V32 instalado. Las pruebas aisladas
+no certifican arranque, registro QOM ni comportamiento temporal integrado.
 
 ## Protocolo del puente (v6)
 

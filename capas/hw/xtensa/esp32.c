@@ -9,6 +9,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qemu/units.h"
@@ -271,6 +272,31 @@ static void esp32_soc_add_unimp_device(MemoryRegion *dest, const char* name, hwa
     g_free(name_apb);
 }
 
+/* Taller: conservar las rutas y validaciones del puente del ESP32 clásico. */
+static void esp32_taller_recibir(void *opaque, uint8_t tipo,
+                                const uint8_t *datos, size_t largo)
+{
+    if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
+        esp32_gpio_fijar_entrada(datos[0], datos[1] != 0);
+    } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
+        static const uint8_t gpio_adc1[] = {36, 37, 38, 39, 32, 33, 34, 35};
+
+        for (int canal = 0; canal < ESP32_SENS_CANALES_ADC1; canal++) {
+            if (datos[0] == gpio_adc1[canal]) {
+                esp32_sens_fijar_valor(canal, lduw_le_p(datos + 1));
+                break;
+            }
+        }
+    } else if (tipo == TALLER_TRAMA_I2C_DISPOSITIVO && largo == 3) {
+        taller_i2c_dispositivo(datos[0], datos[1], datos[2] != 0);
+    } else if (tipo == TALLER_TRAMA_I2C_REGISTROS &&
+               largo >= 3 && largo <= 3 + 240) {
+        taller_i2c_registros(datos[0], datos[1], datos[2], datos + 3, largo - 3);
+    } else if (tipo == TALLER_TRAMA_ENTRADA_ARMADA) {
+        esp32_gpio_armar_entrada(datos, largo);
+    }
+}
+
 static void esp32_soc_realize(DeviceState *dev, Error **errp)
 {
     Esp32SocState *s = ESP32_SOC(dev);
@@ -515,7 +541,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     }
     if (puente) {
         /* Ambos espejos deben existir antes de recibir altas tras HOLA. */
-        taller_puente_iniciar(puente);
+        taller_puente_iniciar(puente, esp32_taller_recibir, s);
     }
 
     /* TWAI model passes intmatrix IRQs to the SJA1000 controller model

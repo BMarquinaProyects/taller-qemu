@@ -11,9 +11,7 @@
 #include "hw/ssi/ssi.h"
 #include "hw/qdev-properties.h"
 #include "hw/misc/taller_puente.h"
-#include "hw/gpio/esp32_gpio.h"
-#include "hw/misc/esp32_sens.h"
-#include "hw/i2c/taller_i2c.h"
+#include "hw/misc/taller_armado.h"
 
 #define CARGA_MAX_SPI 4096
 #define CARGA_MAX_I2C 4096
@@ -24,6 +22,8 @@ static CharBackend puente_fe;
 static bool puente_activo;
 
 /* Tramas que llegan del programa externo: se acumulan hasta tener una entera. */
+static TallerPuenteReceptor receptor_entrante;
+static void *receptor_opaque;
 /* ENTRADA_ARMADA: cabecera + 9 bytes fijos + 200 pasos de 5 bytes. */
 static uint8_t entrada_buf[CABECERA + TALLER_ARMADO_CARGA_MAX];
 static size_t entrada_len;
@@ -31,28 +31,9 @@ static size_t entrada_descartar;
 
 static void procesar_trama_entrante(const uint8_t *t, uint16_t largo)
 {
-    if (t[0] == TALLER_TRAMA_ENTRADA && largo >= 2) {
-        esp32_gpio_fijar_entrada(t[CABECERA], t[CABECERA + 1] != 0);
-    } else if (t[0] == TALLER_TRAMA_ANALOGICO && largo >= 3) {
-        static const uint8_t gpio_adc1[] = {36, 37, 38, 39, 32, 33, 34, 35};
-
-        for (int canal = 0; canal < ESP32_SENS_CANALES_ADC1; canal++) {
-            if (t[CABECERA] == gpio_adc1[canal]) {
-                esp32_sens_fijar_valor(canal, lduw_le_p(t + CABECERA + 1));
-                break;
-            }
-        }
-    } else if (t[0] == TALLER_TRAMA_I2C_DISPOSITIVO && largo == 3) {
-        taller_i2c_dispositivo(t[CABECERA], t[CABECERA + 1],
-                              t[CABECERA + 2] != 0);
-    } else if (t[0] == TALLER_TRAMA_I2C_REGISTROS &&
-               largo >= 3 && largo <= 3 + 240) {
-        taller_i2c_registros(t[CABECERA], t[CABECERA + 1], t[CABECERA + 2],
-                            t + CABECERA + 3, largo - 3);
-    } else if (t[0] == TALLER_TRAMA_ENTRADA_ARMADA) {
-        esp32_gpio_armar_entrada(t + CABECERA, largo);
+    if (receptor_entrante) {
+        receptor_entrante(receptor_opaque, t[0], t + CABECERA, largo);
     }
-    /* otros tipos: se ignoran (compatibilidad con versiones futuras) */
 }
 
 static int puente_puede_leer(void *opaque)
@@ -151,9 +132,12 @@ void taller_puente_rmt(uint8_t canal, uint8_t gpio, uint32_t tick_ps,
     } while (cantidad);
 }
 
-void taller_puente_iniciar(Chardev *chr)
+void taller_puente_iniciar(Chardev *chr, TallerPuenteReceptor receptor,
+                           void *opaque)
 {
     uint8_t version[4];
+    receptor_entrante = receptor;
+    receptor_opaque = opaque;
     qemu_chr_fe_init(&puente_fe, chr, &error_fatal);
     qemu_chr_fe_set_handlers(&puente_fe, puente_puede_leer, puente_leer, NULL, NULL, NULL, NULL, true);
     puente_activo = true;

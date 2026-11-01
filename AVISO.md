@@ -22,3 +22,15 @@ Cambios de Taller (resumen):
 - Prueba MicroPython v1.29.0 mediante REPL raw paste, con verificación exacta
   de 40 960 bytes y recepción MISO. El firmware externo no se distribuye aquí.
 - Matriz de interrupciones (`hw/xtensa/esp32_intc.c`): nivel por fuente y líneas como OR de sus fuentes, recalculadas al reasignar.
+- GPIO del ESP32-C3 independiente del clásico, con 22 pines, registros OUT/ENABLE/IN,
+  W1TS/W1TC, PAD_DRIVER en `0x74 + 4·n`, selección de salida conservada en
+  `0x554 + 4·n` y trenes armados reutilizados (`hw/gpio/esp32c3_gpio.c` y cabecera).
+- Máquina C3 conectada al chardev `taller-puente` con HOLA v6 (`hw/riscv/esp32c3.c`).
+  El parser común entrega cargas a un receptor por máquina; el clásico conserva
+  GPIO/ADC1/I2C y el C3 recibe GPIO y armados. No se modifica la matriz IRQ C3:
+  el modelo base ya conserva niveles, aplica OR y recalcula al reasignar.
+- Compilación y empaquetado de Xtensa y RISC-V32 mediante `construir.sh`, con
+  reglas Meson para el GPIO y el puente C3. Prueba Arduino e imagen completa de
+  flash de 4 MiB, modo `c3_gpio`, unitarias del modelo real y despacho de entradas.
+  IO_MUX, IRQ GPIO, rutas periféricas y conexión C3 de LEDC/ADC/I2C/RMT/SPI2
+  quedan pendientes; los modelos clásicos no se trasladan al C3.
