@@ -532,6 +532,7 @@ static void esp32c3_machine_init(MachineState *machine)
     /* Modelos C3 en sus direcciones propias, antes de recibir por el puente. */
     {
         ms->ledc.gpio = &ms->gpio;
+        ms->ledc.pin_de_senal = esp32c3_gpio_pin_de_senal;
         sysbus_realize(SYS_BUS_DEVICE(&ms->ledc), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->ledc), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_LEDC_BASE, mr, 0);

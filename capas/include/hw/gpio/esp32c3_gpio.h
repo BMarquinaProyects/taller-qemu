@@ -57,4 +57,4 @@ typedef struct ESP32C3GPIOState {
 void esp32c3_gpio_fijar_entrada(ESP32C3GPIOState *s, uint8_t pin, bool nivel);
 void esp32c3_gpio_armar_entrada(ESP32C3GPIOState *s, const uint8_t *datos,
                                size_t largo);
-int esp32c3_gpio_pin_de_senal(ESP32C3GPIOState *s, int senal);
+int esp32c3_gpio_pin_de_senal(void *opaque, int senal);

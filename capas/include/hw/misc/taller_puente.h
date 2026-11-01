@@ -27,7 +27,8 @@
  *             disponible desde v2
  *  17 ANALOGICO carga: u8 gpio, u16 valor (3 bytes, sin relleno; disponible desde v3)
  *              valor ADC1 de 12 bits, saturado a 4095; GPIO ajenos a ADC1 se ignoran
- *              GPIO 36,37,38,39,32,33,34,35 -> canales ADC1 0,1,2,3,4,5,6,7
+ *              Clásico: GPIO 36,37,38,39,32,33,34,35 -> ADC1 0,1,2,3,4,5,6,7.
+ *              C3: GPIO0..4 -> ADC1 0..4; S3: GPIO1..10 -> ADC1 0..9.
  *  18 I2C_DISPOSITIVO carga: u8 bus, u8 direccion, u8 activo (alta/baja; desde v4)
  *  19 I2C_REGISTROS carga: u8 bus, u8 direccion, u8 registro_inicial, bytes (máx. 240)
  *              bus 0/1, direcciones de 7 bits salvo general call; ocho altas por bus
@@ -36,7 +37,8 @@
  *              sin alta no hay ACK; REGISTROS no mueve el puntero del firmware
  *  20 ENTRADA_ARMADA (desde v5): u8 pin_disparo, u8 flanco (0=bajada, 1=subida),
  *              u32 minimo_ns, u8 pin_salida, u16 n, n*(u32 espera_ns, u8 nivel).
- *              Sin relleno: 9+5*n bytes; GPIO 0..39 (C3: 0..21), nivel 0/1, n<=200.
+ *              Sin relleno: 9+5*n bytes; nivel 0/1, n<=200.
+ *              GPIO: clásico 0..39, C3 0..21, S3 0..21 y 26..48.
  *              n=0 desarma; máximo ocho ranuras, una por pin_disparo.
  *              Cada espera se cuenta desde el paso anterior (primera: flanco).
  *              Vigila enable ? out : 1; inicial alto desde t=0. El flanco exige
@@ -45,8 +47,9 @@
  *              nunca a los pasos en curso. Una carga inválida se ignora entera.
  *
  * Se activa solo si existe un chardev con id "taller-puente".
- * Cada máquina recibe sus cargas mediante TallerPuenteReceptor. El C3 solo
- * admite ENTRADA y ENTRADA_ARMADA en esta fase; ADC/I2C siguen en el clásico.
+ * Cada máquina recibe sus cargas mediante TallerPuenteReceptor. C3 y S3
+ * admiten ENTRADA, ENTRADA_ARMADA y ANALOGICO en sus pines propios;
+ * I2C sigue conectado solamente en el clásico.
  *
  * Copyright (c) 2026 Taller. Licencia: GPL-2.0-or-later.
  */

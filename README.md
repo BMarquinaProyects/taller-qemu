@@ -1,6 +1,6 @@
 # taller-qemu
 
-QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) y ESP32-C3 con GPIO, LEDC, ADC1, I2C0 y RMT TX conectados al puente, que usa
+QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas), ESP32-C3 con GPIO, LEDC, ADC1, I2C0 y RMT TX, y ESP32-S3 con GPIO, LEDC y ADC1, todos conectados al puente, que usa
 **Taller**, un simulador de placas y componentes. Ver `AVISO.md` para el origen y los cambios.
 
 ## Compilar
@@ -140,8 +140,8 @@ python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_rmt pruebas/c3_rmt_p
 bash pruebas/todas.sh /ruta/qemu-system-xtensa /ruta/qemu-system-riscv32
 ```
 
-`todas.sh` conserva las once llamadas clásicas y ejecuta los cinco modos C3:
-`c3_gpio`, `c3_pwm`, `c3_analogico`, `c3_i2c` y `c3_rmt`.
+`todas.sh` conserva las once llamadas clásicas y ejecuta los cinco modos C3 (`c3_gpio`, `c3_pwm`,
+`c3_analogico`, `c3_i2c` y `c3_rmt`) y los tres S3 (`s3_gpio`, `s3_pwm` y `s3_analogico`).
 Sin segundo argumento, busca `qemu-system-riscv32` junto al Xtensa; también
 admite `QEMU_C3=/ruta/binario`. La omisión opcional de MicroPython sigue igual.
 Las unitarias ejecutan el GPIO C3 real aislado, sus trenes/reset, el parser y
@@ -156,6 +156,144 @@ incluido el despacho I2C del C3. `bash -n pruebas/todas.sh` pasó. WSL devolvió
 los binarios recompilados.** Las pruebas aisladas no certifican arranque,
 registro QOM ni comportamiento temporal integrado; tampoco se ejecutó aquí
 MicroPython. `VERSION` sigue en 0.9.0 y el protocolo sigue en v7.
+
+## ESP32-S3: GPIO, LEDC, ADC1 y puente (fase 6d)
+
+Usar **qemu-system-xtensa -machine esp32s3**. La máquina de las capas
+(`hw/xtensa/esp32s3.c`) sustituye el GPIO mínimo de Espressif y conecta el
+mismo chardev `taller-puente`: HOLA, GPIO, PWM, DISPARO y TIEMPO **v7**.
+ENTRADA, ENTRADA_ARMADA y ANALOGICO llegan a su receptor propio, sin cambiar
+el protocolo: las máscaras GPIO ya son de 64 bits. Se conservan los demás
+dispositivos de la máquina base `esp-develop-9.2.2-20260417`.
+
+### Modelos y límites S3
+
+El GPIO tiene **49 índices (0..48), de los que 45 son pines físicos**:
+**GPIO0..21 y GPIO26..48**. GPIO22..25 y los bits superiores se ignoran,
+también en entradas externas, tablas de registros y ambos pines de un tren.
+Los registros, relativos a `DR_REG_GPIO_BASE = 0x60004000`, se contrastaron
+con `soc/gpio_reg.h` del core Arduino ESP32 **3.3.12**:
+
+| Registro | Banco bajo | Banco alto (bit 0 = GPIO32) |
+|---|---|---|
+| OUT / W1TS / W1TC | `0x04 / 0x08 / 0x0c` | `0x10 / 0x14 / 0x18` |
+| ENABLE / W1TS / W1TC | `0x20 / 0x24 / 0x28` | `0x2c / 0x30 / 0x34` |
+| IN, solo lectura | `0x3c` | `0x40` |
+
+`GPIO_PINn_REG`, en `0x74 + 4·n`, conserva el valor escrito; PAD_DRIVER
+(bit 2) activa drenador abierto. IN devuelve OUT en salida push-pull, el
+nivel externo en entrada y su AND en salida de drenador abierto. Las
+entradas externas empiezan altas: no se simulan resistencias ni
+INPUT_PULLDOWN. STRAP (`0x38`) conserva la propiedad `strap_mode`, por
+defecto **4**, arranque flash. IO_MUX, IRQ GPIO, filtros e inversión quedan
+pendientes.
+
+`FUNCn_OUT_SEL_CFG`, en `0x554 + 4·n`, conserva el registro completo y usa
+**9 bits** de selección. Al reset selecciona software (**256**). Los
+periféricos resuelven su primera ruta mediante `esp32s3_gpio_pin_de_senal`.
+Los trenes reutilizan `taller_armado.h`, ahora con capacidad hasta GPIO48:
+ocho ranuras, 200 pasos, reloj virtual, DISPARO, rearme persistente y
+cancelación de la reproducción al reset, como en C3. Cada modelo mantiene
+su límite propio (clásico 40, C3 22, S3 con su hueco). El constructor Python
+`trama_entrada_armada(..., pines=49)` permite pines altos del S3; por defecto
+sigue validando 40 índices para las pruebas del clásico.
+
+| Pieza | Estado en S3 |
+|---|---|
+| LEDC | Reutiliza `hw/misc/esp32c3_ledc.c`, parametrizado a **8 canales LS y 4 timers**, con señales **73..80** (`LEDC_LS_SIG_OUT0..7` de `gpio_sig_map.h`). Base `0x60019000`; registros de canal, timer y reloj coinciden con C3. Frecuencia y ciclo usan el mismo cálculo, relojes y tramas PWM; cambiar la ruta apaga el pin anterior. El C3 conserva 6 canales y señales 45..50. Sin fades, IRQ ni pulsos GPIO individuales. |
+| ADC1 | Modelo propio `hw/misc/esp32s3_saradc.c`: **10 canales, GPIO1..10**, según `adc_channel.h`. `adc_ll.h` usa **SENS**, base **`0x60008800`**, no `APB_SARADC.ONETIME_SAMPLE` del C3. `SAR_MEAS1_CTRL2` (`0x0c`) selecciona un pad en bits 30..19; START (17) completa la conversión y publica DONE (16) y dato (15..0), ambos de solo lectura. Bajar START limpia DONE; mantenerlo alto no repite conversión. `SARADC_MEAS_STATUS` permanece libre. ANALOGICO inyecta el crudo, limitado a 4095; las entradas sobreviven al reset. `SAR_MEAS2_CTRL2` (`0x30`) termina con cero para permitir la autocalibración de arranque de ADC2. Sin canales ADC2 externos, DMA, ULP, latencia, IRQ ni calibración analógica. |
+| UART, TIMG, SYSTIMER, matriz IRQ, flash y GDMA | Modelos de Espressif conservados. El revisor confirmó previamente arranque Arduino por UART0 con flash DIO desde 0x0 y watchdog TIMG desactivado. |
+| I2C / RMT / SPI de usuario | Pendientes en S3. RMT sigue como dispositivo sin implementar de la máquina base; el receptor S3 ignora las tramas I2C. SPI1 sigue sirviendo la flash. |
+
+### Pruebas S3
+
+- `s3_gpio`: tres pulsos completos en **GPIO2**, lectura **GPIO4** con
+  INPUT_PULLUP y ENTRADA(4, 0). Exige `S3-ANTES=1`, `S3-DESPUES=0` y
+  `TALLER-OK s3_gpio`, líneas únicas y ordenadas, HOLA v7 y máscaras válidas.
+- `s3_pwm`: **GPIO4**, 50 Hz al 5 % → 25 % → 100 Hz → apagado. Exige las
+  tramas PWM en orden, margen del 0,5 % y `TALLER-OK s3_pwm` único.
+- `s3_analogico`: `analogRead(1)`; inyecta ANALOGICO(1, 2048) y luego 4095.
+  Exige lecturas 0 → 1900..2200 → 4000..4095 y `TALLER-OK s3_analogico`.
+
+Los verificadores puros y lanzadores se comparten con C3, parametrizados por
+chip, GPIO y máscara válida. Cada ejecución usa una **copia privada** de la
+flash de **4 MiB**, sin eFuse ECO3 del clásico, UART0, `-icount
+shift=2,align=off,sleep=on` y
+`-global driver=timer.esp32s3.timg,property=wdt_disable,value=true`.
+La instalación de QEMU debe incluir la ROM `esp32s3_rev0_rom.bin`.
+
+Los tres sketches e imágenes están en `pruebas/s3_*_prueba/` y
+`pruebas/s3_*_prueba.flash.bin`. Compilados con CLI de Taller **1.5.1** y core
+**3.3.12**; bootloader en **0x0**, particiones en **0x8000**, boot_app0 en
+**0xe000** y aplicación en **0x10000**:
+
+```powershell
+$cli = "$env:APPDATA\dev.taller.app\arduino-cli\1.5.1\arduino-cli.exe"
+$config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
+$fqbn = 'esp32:esp32:esp32s3:FlashMode=dio,FlashSize=4M,PSRAM=disabled,CDCOnBoot=default'
+foreach ($nombre in 's3_gpio_prueba', 's3_pwm_prueba', 's3_analogico_prueba') {
+  $compilacion = Join-Path $PWD ".trabajo\$nombre"
+  & $cli --config-file $config compile --fqbn $fqbn `
+    --build-path $compilacion "pruebas/$nombre"
+  if ($LASTEXITCODE -ne 0) { throw "Falló $nombre" }
+  Copy-Item "$compilacion\$nombre.ino.merged.bin" "pruebas/$nombre.flash.bin"
+}
+```
+
+SHA-256 de las imágenes incluidas:
+
+| Imagen | SHA-256 |
+|---|---|
+| `s3_gpio_prueba.flash.bin` | `cf1c71264997a19975b0810ad1b51c367e4be777d9b400786b2306061b1f5407` |
+| `s3_pwm_prueba.flash.bin` | `8351ca35f7e3fe6bdab0d9878a6ae352795dc6d90e70bcfdf63bf4ae8107a1db` |
+| `s3_analogico_prueba.flash.bin` | `ec1337eca9dc628588fe472069f00900fc3779d0eaba87ab5e0a5e9eb3b14cd8` |
+
+```sh
+python3 -m unittest discover -s pruebas -p '*_unitarias.py'
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_gpio pruebas/s3_gpio_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_pwm pruebas/s3_pwm_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_analogico pruebas/s3_analogico_prueba.flash.bin
+bash pruebas/todas.sh /ruta/qemu-system-xtensa /ruta/qemu-system-riscv32
+```
+
+El bloqueo de `s3_analogico` sin ninguna línea `S3-A=` se explica por el
+constructor [`adc_hw_calibration()` de IDF 5.5.5](https://github.com/espressif/esp-idf/blob/v5.5.5/components/esp_adc/adc_common.c):
+calibra **ambas unidades y sus cuatro atenuaciones antes de `setup()`**.
+Sin eFuses de calibración, `read_cal_channel()` pulsa START sin pads y espera
+DONE también en ADC2 (`SENS+0x30`), que antes solo almacenaba escrituras.
+Ahora completa con cero (GND interno); ADC1 conserva las entradas del puente.
+En una lectura normal, `adc_oneshot_ll_start()` espera `MEAS_STATUS=0` en
+`SENS+0x40` y `adc_oneshot_hal_convert()` espera DONE en `SENS+0x0c`.
+El arbitraje APB afecta a ADC2; no hace falta simular ADC digital ni modificar
+RTC_CNTL para resolver esta espera. La regresión C reproduce calibraciones
+repetidas de ambas unidades, protección DATA/DONE, independencia y reset.
+
+Tras recompilar QEMU con las capas actualizadas, esta traza opcional vuelca
+todos los accesos SENS a stderr (L/E, dirección absoluta, tamaño y valor):
+
+```sh
+TALLER_ADC_TRAZA=1 python3 pruebas/qemu_prueba.py "$HOME/qemu-trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa" s3_analogico pruebas/s3_analogico_prueba.flash.bin 2> /tmp/s3-adc.traza
+```
+
+Buscar `60008830`: tras START (bit 17), la lectura debe tener DONE (bit 16)
+y dato cero; después deben verse conversiones ADC1 en `6000880c`.
+El verificador exige lecturas UART `S3-A=0`, `S3-A=2048`, `S3-A=4095` y
+`TALLER-OK s3_analogico`; si pasan, muestra `OK s3_analogico: GPIO1 0 → 2048 → 4095`.
+Sin la variable, o con valor distinto de `1`, la traza permanece apagada.
+El lanzador hereda stderr cuando está activa para evitar llenar su tubería
+interna y bloquear QEMU durante la calibración.
+
+Las unitarias compilan y ejecutan los modelos C reales aislados de QOM:
+ambos bancos, GPIO48, huecos, selección de 9 bits, drenador abierto, trenes,
+ocho canales LEDC/cuatro timers y diez canales ADC1, además de reset.
+Prueban el receptor real S3 con el parser fragmentado y los tres lanzadores
+mediante sockets, incluida fragmentación UART, inyecciones y flash privada.
+También pasan las unitarias previas. Se compilaron aisladamente ocho unidades
+C con cabeceras reales de QEMU (máquinas S3/C3, GPIO S3/C3/clásico, LEDC
+compartido, ADC1 S3 y puente). **Pendientes enlace de QEMU y ejecución real
+de `todas.sh` con los binarios recompilados**; las pruebas aisladas no
+certifican registro QOM, arranque ni temporización integrada.
+La investigación opcional de MicroPython S3 no se realizó en esta fase.
 
 ## Protocolo del puente (v7)
 

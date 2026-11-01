@@ -54,7 +54,7 @@ void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel)
 
 void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo)
 {
-    if (gpio_del_chip) {
+    if (gpio_del_chip && largo >= 9 && datos[0] < 40 && datos[6] < 40) {
         taller_armado_recibir(&gpio_del_chip->armado, datos, largo);
     }
 }

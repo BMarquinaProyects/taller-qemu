@@ -72,6 +72,31 @@ static void esp32c3_gpio_armar_entrada(ESP32C3GPIOState *s, const uint8_t *p, si
     taller_armado_recibir(&armado, p, n);
 }
 #include "c3_receptor.h"
+/* Adaptadores de los destinos S3; los modelos se prueban aparte sin QOM. */
+typedef struct ESP32S3GPIOState { unsigned llamadas; uint8_t pin; bool nivel; } ESP32S3GPIOState;
+typedef struct ESP32S3SarAdcState { unsigned llamadas; uint8_t pin; uint16_t valor; } ESP32S3SarAdcState;
+typedef struct Esp32s3SocState {
+    ESP32S3GPIOState gpio;
+    ESP32S3SarAdcState saradc;
+} Esp32s3SocState;
+static void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, bool nivel)
+{
+    s->llamadas++;
+    s->pin = pin;
+    s->nivel = nivel;
+}
+static void esp32s3_saradc_fijar_valor(ESP32S3SarAdcState *s, uint8_t pin, uint16_t valor)
+{
+    s->llamadas++;
+    s->pin = pin;
+    s->valor = valor;
+}
+static void esp32s3_gpio_armar_entrada(ESP32S3GPIOState *s, const uint8_t *p, size_t n)
+{
+    assert(s != NULL);
+    taller_armado_recibir(&armado, p, n);
+}
+#include "s3_receptor.h"
 #include "puente_receptor.h"
 
 static void recibir(const uint8_t *datos, size_t n, size_t fragmento)
@@ -150,6 +175,33 @@ int main(void)
     receptor_opaque = &otro_c3;
     recibir(entrada, sizeof(entrada), 4);
     assert(!(otro_c3.gpio.in_externo & (1u << 9)));
+    assert(entradas == 1 && analogicos == 1 && altas == 2 && registros == 2);
+    /* Receptor real S3: pin alto, valor LE y tren, sin tocar otra máquina. */
+    Esp32s3SocState s3 = {0}, otro_s3 = {0};
+    receptor_entrante = esp32s3_taller_recibir;
+    receptor_opaque = &s3;
+    entrada[12] = 48;
+    entrada[13] = 0;
+    recibir(entrada, sizeof(entrada), 1);
+    adc_c3[12] = 10;
+    adc_c3[13] = 0x34;
+    adc_c3[14] = 0x12;
+    recibir(adc_c3, sizeof(adc_c3), 2);
+    recibir(alta, sizeof(alta), 1);
+    recibir(espejo, sizeof(espejo), 1);
+    assert(s3.gpio.llamadas == 1 && s3.gpio.pin == 48 && !s3.gpio.nivel);
+    assert(s3.saradc.llamadas == 1 && s3.saradc.pin == 10 && s3.saradc.valor == 0x1234);
+    assert(!otro_s3.gpio.llamadas && !otro_s3.saradc.llamadas);
+    const uint8_t tren_s3[] = {20, 5, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                              48, 1, 0, 0, 0, 0, 47, 1, 0, 0, 0, 0, 0, 1};
+    taller_armado_iniciar(&armado, 0);
+    recibir(tren_s3, sizeof(tren_s3), 1);
+    assert(armado.ranuras[0].armada && armado.ranuras[0].programa.pin_disparo == 48);
+    assert(armado.ranuras[0].programa.pin_salida == 47);
+    for (unsigned tipo = 16; tipo <= 20; tipo++) {
+        esp32s3_taller_recibir(&s3, tipo, NULL, 0);
+    }
+    assert(s3.gpio.llamadas == 1 && s3.saradc.llamadas == 1);
     assert(entradas == 1 && analogicos == 1 && altas == 2 && registros == 2);
     receptor_entrante = esp32_taller_recibir;
     receptor_opaque = NULL;

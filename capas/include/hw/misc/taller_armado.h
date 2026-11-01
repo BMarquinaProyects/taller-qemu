@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define TALLER_ARMADO_PINES 40
+#define TALLER_ARMADO_PINES 49
 #define TALLER_ARMADO_RANURAS 8
 #define TALLER_ARMADO_PASOS 200
 #define TALLER_ARMADO_CARGA_MAX (9 + 5 * TALLER_ARMADO_PASOS)

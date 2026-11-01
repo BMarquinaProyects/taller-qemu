@@ -1,18 +1,19 @@
-/* LEDC C3: cuatro timers y seis canales LS conectados al puente de Taller.
+/* LEDC C3/S3: cuatro timers y seis u ocho canales LS en el puente de Taller.
  * Registros: soc/ledc_reg.h y hal/ledc_ll.h del core Arduino 3.3.12.
  * GPL-2.0-or-later. No simula fades, IRQ ni pulsos GPIO individuales.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/esp32c3_ledc.h"
-#include "hw/gpio/esp32c3_gpio.h"
+#include "qapi/error.h"
+#include "hw/qdev-properties.h"
 #include "hw/misc/taller_puente.h"
 
 /* Estado y registros independientes del LEDC clásico. */
 static ESP32C3LEDCState *ledc_del_chip;
 
-static bool esp32c3_ledc_registro_valido(hwaddr addr)
+static bool esp32c3_ledc_registro_valido(ESP32C3LEDCState *s, hwaddr addr)
 {
-    return !(addr & 3) && (addr < 0x78 ||
+    return !(addr & 3) && (addr < 0x14 * s->canales ||
            (addr >= 0xa0 && addr <= 0xd0) || addr == 0xfc);
 }
 
@@ -20,7 +21,7 @@ static uint64_t esp32c3_ledc_read(void *opaque, hwaddr addr, unsigned size)
 {
     ESP32C3LEDCState *s = ESP32C3_LEDC(opaque);
 
-    return esp32c3_ledc_registro_valido(addr) ? s->registros[addr / 4] : 0;
+    return esp32c3_ledc_registro_valido(s, addr) ? s->registros[addr / 4] : 0;
 }
 
 static void esp32c3_ledc_actualizar_canal(ESP32C3LEDCState *s, unsigned canal)
@@ -34,7 +35,7 @@ static void esp32c3_ledc_actualizar_canal(ESP32C3LEDCState *s, unsigned canal)
                      fuente == 2 ? 17500000 : fuente == 3 ? 40000000 : 0;
     uint32_t frecuencia_mhz = 0, ciclo_ppm = 0;
     bool habilitado = conf & (1u << 2);
-    int gpio = esp32c3_gpio_pin_de_senal(s->gpio, ESP32C3_LEDC_SENAL0 + canal);
+    int gpio = s->pin_de_senal ? s->pin_de_senal(s->gpio, s->senal0 + canal) : -1;
 
     if (reloj && divisor && resolucion > 0 && resolucion <= 14 &&
         !(timer & ((1u << 22) | (1u << 23)))) {
@@ -68,9 +69,9 @@ static void esp32c3_ledc_actualizar_canal(ESP32C3LEDCState *s, unsigned canal)
 
 void esp32c3_ledc_actualizar_senal(int senal)
 {
-    if (ledc_del_chip && senal >= ESP32C3_LEDC_SENAL0 &&
-        senal < ESP32C3_LEDC_SENAL0 + ESP32C3_LEDC_CANALES) {
-        esp32c3_ledc_actualizar_canal(ledc_del_chip, senal - ESP32C3_LEDC_SENAL0);
+    if (ledc_del_chip && senal >= (int)ledc_del_chip->senal0 &&
+        (unsigned)senal < ledc_del_chip->senal0 + ledc_del_chip->canales) {
+        esp32c3_ledc_actualizar_canal(ledc_del_chip, senal - ledc_del_chip->senal0);
     }
 }
 
@@ -80,10 +81,10 @@ static void esp32c3_ledc_write(void *opaque, hwaddr addr, uint64_t value,
     ESP32C3LEDCState *s = ESP32C3_LEDC(opaque);
     uint32_t v = value;
 
-    if (!esp32c3_ledc_registro_valido(addr)) {
+    if (!esp32c3_ledc_registro_valido(s, addr)) {
         return;
     }
-    if (addr < 0x78) {
+    if (addr < 0xa0) {
         unsigned canal = addr / 0x14;
         unsigned campo = addr % 0x14;
 
@@ -106,7 +107,7 @@ static void esp32c3_ledc_write(void *opaque, hwaddr addr, uint64_t value,
             return; /* Contador no temporizado, siempre cero. */
         }
         s->registros[addr / 4] = v & ~(1u << 25);
-        for (unsigned canal = 0; canal < ESP32C3_LEDC_CANALES; canal++) {
+        for (unsigned canal = 0; canal < s->canales; canal++) {
             if ((s->registros[canal * 5] & 3) == (addr - 0xa0) / 8) {
                 esp32c3_ledc_actualizar_canal(s, canal);
             }
@@ -115,7 +116,7 @@ static void esp32c3_ledc_write(void *opaque, hwaddr addr, uint64_t value,
         s->registros[addr / 4] = v; /* Sin eventos ni IRQ de fade/overflow. */
     } else if (addr == 0xd0) {
         s->registros[addr / 4] = v;
-        for (unsigned canal = 0; canal < ESP32C3_LEDC_CANALES; canal++) {
+        for (unsigned canal = 0; canal < s->canales; canal++) {
             esp32c3_ledc_actualizar_canal(s, canal);
         }
     }
@@ -135,7 +136,7 @@ static void esp32c3_ledc_reiniciar(Object *obj, ResetType tipo)
 {
     ESP32C3LEDCState *s = ESP32C3_LEDC(obj);
 
-    for (unsigned canal = 0; canal < ESP32C3_LEDC_CANALES; canal++) {
+    for (unsigned canal = 0; canal < s->canales; canal++) {
         if (s->pwm_emitido[canal]) {
             taller_puente_pwm(s->pwm_gpio[canal], s->pwm_frecuencia_mhz[canal], 0);
         }
@@ -159,11 +160,36 @@ static void esp32c3_ledc_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
 }
 
+static void esp32c3_ledc_realize(DeviceState *dev, Error **errp)
+{
+    ESP32C3LEDCState *s = ESP32C3_LEDC(dev);
+
+    if (!s->canales || s->canales > ESP32C3_LEDC_CANALES_MAX ||
+        s->senal0 > 256 - s->canales) {
+        error_setg(errp, "LEDC LS: canales o señales fuera de rango");
+    }
+}
+
+static Property esp32c3_ledc_properties[] = {
+    DEFINE_PROP_UINT32("canales", ESP32C3LEDCState, canales, ESP32C3_LEDC_CANALES),
+    DEFINE_PROP_UINT32("senal0", ESP32C3LEDCState, senal0, ESP32C3_LEDC_SENAL0),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
+static void esp32c3_ledc_finalize(Object *obj)
+{
+    if (ledc_del_chip == ESP32C3_LEDC(obj)) {
+        ledc_del_chip = NULL;
+    }
+}
+
 static void esp32c3_ledc_class_init(ObjectClass *klass, void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     rc->phases.hold = esp32c3_ledc_reiniciar;
+    DEVICE_CLASS(klass)->realize = esp32c3_ledc_realize;
+    device_class_set_props(DEVICE_CLASS(klass), esp32c3_ledc_properties);
 }
 
 static const TypeInfo esp32c3_ledc_info = {
@@ -171,6 +197,7 @@ static const TypeInfo esp32c3_ledc_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(ESP32C3LEDCState),
     .instance_init = esp32c3_ledc_init,
+    .instance_finalize = esp32c3_ledc_finalize,
     .class_init = esp32c3_ledc_class_init,
 };
 

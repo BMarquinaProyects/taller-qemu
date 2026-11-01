@@ -56,3 +56,19 @@ Cambios de Taller (resumen):
   QEMU y ejecución integrada quedan para la revisión en WSL.
 - Puente v7 (`hw/misc/taller_puente.c`): latido TIEMPO cada 10 ms virtuales con un
   temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.1.
+- GPIO propio del ESP32-S3 (`hw/gpio/esp32s3_gpio.c` y cabecera), basado en
+  la capa C3 y el modelo mínimo de Espressif: dos bancos hasta GPIO48,
+  hueco 22..25, W1TS/W1TC, PAD_DRIVER, matriz de salida de 9 bits y trenes.
+  La lógica compartida de trenes admite 49 índices; cada chip valida sus pines.
+- Máquina S3 de Espressif trasladada a `capas/hw/xtensa/esp32s3.c`, con receptor
+  propio de ENTRADA, ENTRADA_ARMADA y ANALOGICO y conexión al mismo puente v7.
+  LEDC C3 reutilizado mediante parámetros de canales/señales y callback GPIO:
+  seis canales LS y señales 45..50 en C3, ocho y señales 73..80 en S3.
+- ADC1 S3 propio (`hw/misc/esp32s3_saradc.c` y cabecera), diez canales en
+  GPIO1..10 con valores crudos inyectados. Arduino 3.3.12 usa el controlador
+  RTC SENS para una lectura, distinto del APB_SARADC C3. Sin ADC2 ni DMA.
+- Sketches e imágenes Arduino S3 de 4 MiB, modos `s3_gpio`, `s3_pwm` y
+  `s3_analogico` y entradas en `todas.sh`. Verificadores/lanzadores compartidos
+  con C3 y pruebas aisladas de modelos, receptor y sockets. GPIO del clásico
+  mantiene su límite de 40 índices y C3 el de 22. IO_MUX, IRQ GPIO, I2C, RMT
+  y SPI de usuario del S3 siguen pendientes. No cambia VERSION ni el protocolo.

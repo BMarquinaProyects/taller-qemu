@@ -80,7 +80,7 @@ static void validacion_atomica(void)
     }
     /* Pin, flanco, pin de salida, n y nivel; todo el mensaje se ignora. */
     const int posiciones[] = {0, 1, 6, 7, 8, 18};
-    const uint8_t valores[] = {40, 2, 40, 201, 1, 2};
+    const uint8_t valores[] = {49, 2, 49, 201, 1, 2};
     for (size_t i = 0; i < sizeof(posiciones) / sizeof(posiciones[0]); i++) {
         memcpy(mal, dht, sizeof(dht));
         mal[posiciones[i]] = valores[i];

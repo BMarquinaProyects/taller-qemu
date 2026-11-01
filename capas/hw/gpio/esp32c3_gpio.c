@@ -50,15 +50,17 @@ void esp32c3_gpio_fijar_entrada(ESP32C3GPIOState *s, uint8_t pin, bool nivel)
 void esp32c3_gpio_armar_entrada(ESP32C3GPIOState *s, const uint8_t *datos,
                                size_t largo)
 {
-    /* Validar antes de sustituir: taller_armado admite también los 40 clásicos. */
+    /* Validar antes de sustituir: la capacidad compartida llega hasta GPIO48. */
     if (largo >= 9 && datos[0] < ESP32C3_GPIO_PINES &&
         datos[6] < ESP32C3_GPIO_PINES) {
         taller_armado_recibir(&s->armado, datos, largo);
     }
 }
 
-int esp32c3_gpio_pin_de_senal(ESP32C3GPIOState *s, int senal)
+int esp32c3_gpio_pin_de_senal(void *opaque, int senal)
 {
+    ESP32C3GPIOState *s = opaque;
+
     if (s && senal >= 0 && senal < ESP32C3_GPIO_SENAL_SOFTWARE) {
         for (unsigned pin = 0; pin < ESP32C3_GPIO_PINES; pin++) {
             if ((s->seleccion_salida[pin] & 0xff) == (unsigned)senal) {

@@ -104,10 +104,14 @@ class PruebaArmado(unittest.TestCase):
         c3 = (raiz / "capas/hw/riscv/esp32c3.c").read_text(encoding="utf-8")
         receptor_c3 = c3[c3.index("static void esp32c3_taller_recibir"):
                          c3.index("static void esp32c3_machine_init")]
+        s3 = (raiz / "capas/hw/xtensa/esp32s3.c").read_text(encoding="utf-8")
+        receptor_s3 = s3[s3.index("static void esp32s3_taller_recibir"):
+                         s3.index("static void esp32s3_machine_init(MachineState")]
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "puente_receptor.h").write_text(receptor, encoding="utf-8")
             Path(tmp, "clasico_receptor.h").write_text(receptor_clasico, encoding="utf-8")
             Path(tmp, "c3_receptor.h").write_text(receptor_c3, encoding="utf-8")
+            Path(tmp, "s3_receptor.h").write_text(receptor_s3, encoding="utf-8")
             exe = Path(tmp) / "receptor"
             subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror",
                             "-Wno-unused-parameter", "-I", str(raiz / "capas/include"),
