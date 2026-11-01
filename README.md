@@ -1,6 +1,6 @@
 # taller-qemu
 
-QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) que usa
+QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) que usa
 **Taller**, un simulador de placas y componentes. Ver `AVISO.md` para el origen y los cambios.
 
 ## Compilar
@@ -106,6 +106,127 @@ Se usa APB de 80 MHz, o REF_TICK de 1 MHz cuando `TICK_SEL=0`; no se simulan fad
 ni la fuente RC de 8 MHz. Los cambios LS se recalculan también antes de `PARA_UP`,
 sin repetir muestras idénticas. Si una señal aparece en varios GPIO, se usa el primero;
 al cambiar de pin se apaga el anterior.
+
+## SPI con DMA (v0.7.0)
+
+SPI2 (HSPI) y SPI3 (VSPI) leen MOSI y escriben MISO mediante cadenas de
+descriptores `lldesc_t` en SRAM interna (`0x3ffae000..0x3fffffff`). Esto permite
+usar `machine.SPI` de MicroPython con el driver `spi_master` de ESP-IDF 5.x,
+que inicializa el bus con `SPI_DMA_CH_AUTO`. MicroPython `SPI(2)` corresponde
+a **VSPI/SPI3**; `SPI(1)` corresponde a HSPI/SPI2.
+
+Registros añadidos al modelo (desplazamientos desde cada controlador):
+
+| Registros | Semántica |
+|---|---|
+| `DMA_CONF` `0x100` | Conserva configuración; `in_rst`/`out_rst` reinician su motor y estado de descriptores. Los resets comunes FIFO/AHB no desmontan enlaces ya armados. Los bits de reset conservan el valor escrito hasta que el driver los baja. |
+| `DMA_OUT_LINK` `0x104`, `DMA_IN_LINK` `0x108` | Dirección inicial de 20 bits, reconstruida como `0x3ff00000 \| addr`; `start`/`restart` arman el motor y se autolimpian; `stop` lo detiene. |
+| `DMA_STATUS` `0x10c` | `rx_en`/`tx_en` indican motores armados. |
+| `DMA_INT_ENA/RAW/ST/CLR` `0x110..0x11c` | RAW retenido, ST = RAW & ENA; escribir uno en CLR limpia el bit correspondiente. |
+| Descriptores/EOF `0x120..0x144` | Descriptor actual, siguiente, búfer y último EOF procesados. |
+| `DMA_RSTATUS/TSTATUS` `0x148/0x14c` | Estado de reposo, cero; no se simula la evolución de las FIFO. |
+| `SLAVE` `0x38` | Estado real R/W de `trans_done` (bit 4) y habilitación `trans_inten` (bit 9). También permite que IDF provoque la IRQ escribiendo ambos bits. |
+
+`DPORT_SPI_DMA_CHAN_SEL_REG` (`0x3ff005a8`) conserva seis bits: SPI1 en [1:0],
+SPI2 en [3:2] y SPI3 en [5:4]. Para SPI2/3, 0 desactiva DMA, 1/2 seleccionan
+canal y 3 es reservado. La IRQ SPI conserva las fuentes 30/31; las IRQ DMA
+son independientes y llegan a las fuentes 53/54.
+
+Orden del driver contrastado con `spi_ll.h` del core 3.3.12 y
+[ESP-IDF 5.5](https://github.com/espressif/esp-idf/blob/v5.5/components/esp_driver_spi/src/gpspi/spi_master.c):
+
+1. Al inicializar el bus, selecciona canal DMA en DPORT y configura SPI/IRQ.
+2. Al preparar cada transacción, limpia `SLAVE.trans_done`, comprueba `CMD=0`
+   y configura `MOSI_DLEN`, `MISO_DLEN`, comando, dirección y temporización.
+3. Para RX, prepara descriptores, pulsa `in_rst` y los resets de FIFO/AHB,
+   escribe la dirección de `DMA_IN_LINK` y pone `start`.
+4. Para TX, prepara descriptores, pulsa `out_rst` y los resets de FIFO/AHB,
+   escribe la dirección de `DMA_OUT_LINK` y pone `start`. En TX sin RX, IDF
+   puede arrancar antes un inlink NULL como workaround del silicio; sin fase
+   MISO, el modelo no accede a ese descriptor.
+5. Habilita MOSI/MISO después de preparar DMA y escribe `CMD.usr`.
+6. El modelo completa la transferencia y fija `trans_done`; el driver lee
+   ese bit por polling o recibe la IRQ SPI. El driver también lo escribe a
+   uno al inicializar, para poder despertar la ISR cuando llega trabajo.
+
+Cada descriptor contiene tres palabras little-endian: control, dirección de
+búfer y dirección completa del siguiente descriptor. TX usa `length[23:12]`,
+sin superar MOSI_DLEN ni continuar después de EOF. RX usa `size[11:0]`, escribe
+la longitud recibida y pone EOF en el último descriptor utilizado. Ambos
+devuelven `owner` a CPU. Los campos que `lldesc_t` llama `offset`/`sosf`
+son reservados para SPI en el [TRM, sección 2.3.2](https://documentation.espressif.com/esp32_technical_reference_manual_en.pdf)
+y se conservan sin interpretarlos. TX marca `out_done`, `out_eof` y
+`out_total_eof`; RX marca `in_done` e `in_suc_eof`. Una cadena inválida, un
+owner CPU, una dirección ajena a SRAM o un fallo de memoria marca error de
+descriptor; RX sin capacidad suficiente marca `inlink_dscr_empty`.
+
+MOSI sigue pasando por SSI, `taller_puente_spi_byte` y `taller_puente_spi_fin`.
+El núcleo recibe las mismas cargas v6; no hay mensaje DMA nuevo. Un framebuffer
+de 40 960 bytes llega completo, troceado por el puente en bloques de hasta
+4096 bytes. MicroPython además divide su escritura en transacciones de hasta
+4092 bytes. El verificador concatena todas y exige cada byte en orden.
+MISO procede de SSI; sin esclavo que responda devuelve `0xff`.
+Las transacciones sin DMA siguen usando W0..W15, incluido Arduino/ST7735.
+Se corrige además el índice del bucle PIO: la comparación de límites usa la
+posición, permitiendo recibir todos los bytes incluso con MOSI `0xff`.
+
+### Prueba MicroPython
+
+El firmware externo no se incorpora a Git. Descarga
+[ESP32_GENERIC-20260824-v1.29.0.bin](https://micropython.org/resources/firmware/ESP32_GENERIC-20260824-v1.29.0.bin),
+SHA-256 `e67ad6015a0a504c1fec9aa9bbf589d0432ed28e62546f4f8dd8a147f8bd95f6`.
+`preparar_micropython.py` comprueba ese hash y coloca el firmware en **0x1000**
+de una flash de **4 MiB rellena de 0xff**, no en el offset cero:
+
+```sh
+python3 pruebas/preparar_micropython.py /ruta/ESP32_GENERIC-20260824-v1.29.0.bin
+# Sin argumento, el preparador descarga la misma URL y verifica el hash.
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa spi_dma pruebas/micropython.flash.bin
+python3 -m unittest discover -s pruebas -p '*_unitarias.py'
+bash pruebas/todas.sh /ruta/qemu-system-xtensa
+```
+
+`spi_dma_micropython.py` crea `SPI(2, baudrate=20_000_000, sck=Pin(18), mosi=Pin(23))`,
+escribe `b"abcd"`, escribe `bytes(range(256)) * 160`, lee cuatro bytes y exige
+`ffffffff`; termina con `TALLER-OK spi_dma`. El modo `spi_dma` introduce ese
+programa por REPL raw paste, con control de ventana y plazo de espera. Exige
+HOLA v6 y **40968 bytes exactos de VSPI**: los cuatro iniciales, el framebuffer
+y los cuatro ceros MOSI que genera `read(4)`. Rechaza pérdidas, sobrantes,
+cambios de orden y excepciones aunque aparezca la marca de éxito.
+Cada ejecución usa una copia temporal de la flash para proteger la imagen
+original de las escrituras VFS de MicroPython.
+
+`todas.sh` añade la prueba cuando existe `pruebas/micropython.flash.bin`.
+También admite `MICROPYTHON_FLASH=/ruta/flash.bin`; si se indica esa variable
+y falta la imagen, falla. Sin imagen ni variable, anuncia la omisión y sigue
+ejecutando todos los modos anteriores.
+
+Las unitarias compilan en WSL la cabecera pura, el modelo SPI real aislado
+de los servicios QEMU y el emisor SPI real del puente. Cubren una única
+transacción de 40 960 bytes con 11 descriptores, TX/RX en HSPI/VSPI, SSI,
+IRQ separadas, start/stop/reset/canal, cadenas inválidas, límites de longitud
+y recepción sin sobreescribir centinelas. También prueban el verificador y
+el protocolo raw paste por sockets.
+
+**Límites:** ejecución síncrona, sin duración de reloj SPI/DMA, contención
+simultánea de canales, modo continuo/circular, DMA SPI0/1 ni PSRAM. Los modos
+burst se conservan como configuración sin efecto temporal. `OUT_AUTO_WRBACK`
+no condiciona la devolución de owner en este modelo. Los errores detienen
+el recorrido y completan la transacción con sus banderas; no se reproducen
+bloqueos de silicio. La lógica acota cada recorrido a 32768 descriptores y
+solo accede a SRAM interna; un descriptor guest no puede ejecutar MMIO.
+Las pruebas aisladas no sustituyen ejecutar `spi_dma` y los modos anteriores
+con el QEMU recompilado.
+
+## Matriz de interrupciones
+
+`hw/xtensa/esp32_intc.c` es una copia modificada del de Espressif. La matriz guarda el nivel de
+cada fuente, y la línea de cada interrupción de CPU es el OR de todas las fuentes asignadas a ella;
+se recalcula cuando cambia un nivel y cuando se reasigna una fuente. El original ponía la línea al
+nivel de la última fuente que cambiaba y no miraba los niveles al reasignar. Pero ESP-IDF activa y
+desactiva las interrupciones cambiando su asignación (`esp_intr_enable`/`disable`), y el driver
+SPI deja `trans_done` alto antes de activarla para que su ISR entre en cuanto se active: con el
+original, `machine.SPI` de MicroPython se quedaba esperando para siempre.
 
 ## GPIO de drenador abierto
 

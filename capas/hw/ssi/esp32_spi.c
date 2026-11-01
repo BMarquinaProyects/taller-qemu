@@ -12,6 +12,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "sysemu/sysemu.h"
+#include "exec/address-spaces.h"
 #include "hw/hw.h"
 #include "hw/sysbus.h"
 #include "hw/registerfields.h"
@@ -44,11 +45,49 @@ enum {
 
 static void esp32_spi_do_command(Esp32SpiState* state, uint32_t cmd_reg);
 
+static void esp32_spi_update_irq(Esp32SpiState *s)
+{
+    /* SLAVE tiene cinco estados y sus habilitaciones cinco bits más arriba.
+     * trans_done es R/W: IDF también lo pone a uno para despertar su ISR. */
+    qemu_set_irq(s->irq, (s->slave_reg & (s->slave_reg >> 5) & 0x1f) != 0);
+    qemu_set_irq(s->dma_irq, (s->dma.raw & s->dma.ena) != 0);
+}
+
+/* Diagnóstico: TALLER_SPI_TRAZA=1 vuelca a stderr los accesos a los SPI2/SPI3 (no al 0/1 de la flash). */
+static bool esp32_spi_traza(Esp32SpiState *s)
+{
+    static int activa = -1;
+    if (activa < 0) {
+        activa = getenv("TALLER_SPI_TRAZA") != NULL;
+    }
+    return activa && s->index >= 2;
+}
+
+static uint64_t esp32_spi_leer(void *opaque, hwaddr addr, unsigned int size);
+
 static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    uint64_t r = esp32_spi_leer(opaque, addr, size);
+    if (esp32_spi_traza(ESP32_SPI(opaque))) {
+        fprintf(stderr, "spi%d L %03x = %08llx\n", ESP32_SPI(opaque)->index, (unsigned)addr, (unsigned long long)r);
+    }
+    return r;
+}
+
+static uint64_t esp32_spi_leer(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32SpiState *s = ESP32_SPI(opaque);
     uint64_t r = 0;
+    if (addr >= 0x100 && addr <= 0x14c) {
+        return taller_spi_dma_leer(&s->dma, addr);
+    }
     switch (addr) {
+    case A_SPI_CMD:
+        /* Las operaciones se completan síncronamente. USR se autolimpia. */
+        break;
+    case A_SPI_CLOCK:
+        r = s->clock_reg;
+        break;
     case A_SPI_ADDR:
         r = s->addr_reg;
         break;
@@ -89,7 +128,7 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
         r = 0;
         break;
     case A_SPI_SLAVE:
-        r = BIT(R_SPI_SLAVE_TRANS_DONE_SHIFT) | BIT(R_SPI_SLAVE_TRANS_INTEN_SHIFT);
+        r = s->slave_reg;
         break;
     }
     return r;
@@ -99,7 +138,22 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
     Esp32SpiState *s = ESP32_SPI(opaque);
+    if (esp32_spi_traza(s)) {
+        fprintf(stderr, "spi%d E %03x <- %08llx\n", s->index, (unsigned)addr, (unsigned long long)value);
+    }
+    if (addr >= 0x100 && addr <= 0x14c) {
+        taller_spi_dma_escribir(&s->dma, addr, value);
+        esp32_spi_update_irq(s);
+        return;
+    }
     switch (addr) {
+    case A_SPI_CLOCK:
+        s->clock_reg = value;
+        break;
+    case A_SPI_SLAVE:
+        s->slave_reg = value & ~BIT(31); /* sync_reset autolimpiable */
+        esp32_spi_update_irq(s);
+        break;
     case A_SPI_W0 ... A_SPI_W0 + (ESP32_SPI_BUF_WORDS - 1) * sizeof(uint32_t):
         s->data_reg[(addr - A_SPI_W0) / sizeof(uint32_t)] = value;
         break;
@@ -128,10 +182,10 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
         s->user2_reg = value;
         break;
     case A_SPI_MOSI_DLEN:
-        s->mosi_dlen_reg = value;
+        s->mosi_dlen_reg = value & 0xffffff;
         break;
     case A_SPI_MISO_DLEN:
-        s->miso_dlen_reg = value;
+        s->miso_dlen_reg = value & 0xffffff;
         break;
     case A_SPI_PIN:
         s->pin_reg = value;
@@ -158,11 +212,11 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
     uint8_t *c_buf = (uint8_t*) buf;
     for (int i = 0; i < bytes; ++i) {
         uint8_t byte = 0;
-        if (byte < tx_bytes) {
+        if (i < tx_bytes) {
             memcpy(&byte, c_buf + i, 1);
         }
         uint32_t res = ssi_transfer(s->spi, byte);
-        if (byte < rx_bytes) {
+        if (i < rx_bytes) {
             memcpy(c_buf + i, &res, 1);
         }
     }
@@ -197,6 +251,67 @@ static void maybe_encrypt_data(Esp32SpiState *s)
     if (esp32_flash_encryption_enabled(flash_enc)) {
         esp32_flash_encryption_get_result(flash_enc, &s->data_reg[0], 8);
     }
+}
+
+static bool esp32_spi_dma_read(void *opaque, uint32_t addr, void *buf, size_t n)
+{
+    return address_space_read(&address_space_memory, addr, MEMTXATTRS_UNSPECIFIED,
+                              buf, n) == MEMTX_OK;
+}
+
+static bool esp32_spi_dma_write(void *opaque, uint32_t addr, const void *buf, size_t n)
+{
+    return address_space_write(&address_space_memory, addr, MEMTXATTRS_UNSPECIFIED,
+                               buf, n) == MEMTX_OK;
+}
+
+static void esp32_spi_dma_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+{
+    TallerSpiDmaMemoria mem = {s, esp32_spi_dma_read, esp32_spi_dma_write};
+    bool tx_dma = s->dma.out_active;
+    bool rx_dma = s->dma.in_active;
+    bool duplex = FIELD_EX32(s->user_reg, SPI_USER, DOUTDIN);
+    int tx = t->data_tx_bytes;
+    int rx = t->data_rx_bytes;
+    int n = MAX(tx, rx);
+    g_autofree uint8_t *mosi = g_malloc0(MAX(n, 1));
+    g_autofree uint8_t *miso = g_malloc0(MAX(rx, 1));
+
+    if (tx_dma && tx) {
+        tx = taller_spi_dma_copiar(&s->dma, &mem, false, mosi, tx);
+    } else if (!tx_dma && tx) {
+        /* RX sin outlink: el hardware genera clocks con MOSI a cero; no leer
+         * más allá de W15 cuando IDF activa MOSI para una lectura full duplex. */
+        memcpy(mosi, s->data_reg, MIN(tx, (int)sizeof(s->data_reg)));
+    }
+    esp32_spi_cs_set(s, 0);
+    esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
+    esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
+    n = duplex ? MAX(tx, rx) : tx + rx;
+    for (int i = 0; i < n; i++) {
+        uint8_t v = i < tx ? mosi[i] : 0;
+        uint8_t respuesta = ssi_transfer(s->spi, v);
+        int ri = duplex ? i : i - tx;
+        /* SSI sin ningún periférico devuelve cero. Línea MISO suelta = 0xff.
+         * Con puente, taller.spi ya devuelve 0xff y observa todos los clocks. */
+        if (QTAILQ_EMPTY(&BUS(s->spi)->children)) {
+            respuesta = 0xff;
+        }
+        if (ri >= 0 && ri < rx) {
+            miso[ri] = respuesta;
+        }
+    }
+    if (rx_dma && rx) {
+        taller_spi_dma_copiar(&s->dma, &mem, true, miso, rx);
+    } else if (rx) {
+        memcpy(s->data_reg, miso, MIN(rx, (int)sizeof(s->data_reg)));
+    }
+    /* IDF puede arrancar inlink con NULL como workaround durante TX sin RX.
+     * Sin fase MISO no se toca ese descriptor ni se inventa un error. */
+    s->dma.out_active = false;
+    s->dma.in_active = false;
+    esp32_spi_cs_set(s, 1);
+    taller_puente_spi_fin(s->index);
 }
 
 static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
@@ -303,7 +418,22 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
     default:
         return;
     }
-    esp32_spi_transaction(s, &t);
+    s->slave_reg &= ~R_SPI_SLAVE_TRANS_DONE_MASK;
+    esp32_spi_update_irq(s);
+    if (cmd_reg == R_SPI_CMD_USR_MASK && s->dma_chan_sel &&
+        taller_spi_dma_canal(*s->dma_chan_sel, s->index) &&
+        (s->dma.out_active || s->dma.in_active)) {
+        esp32_spi_dma_transaction(s, &t);
+    } else {
+        /* W0..W15 nunca puede albergar una transferencia DMA larga. */
+        if (t.data == s->data_reg) {
+            t.data_tx_bytes = MIN(t.data_tx_bytes, (int)sizeof(s->data_reg));
+            t.data_rx_bytes = MIN(t.data_rx_bytes, (int)sizeof(s->data_reg));
+        }
+        esp32_spi_transaction(s, &t);
+    }
+    s->slave_reg |= R_SPI_SLAVE_TRANS_DONE_MASK;
+    esp32_spi_update_irq(s);
 }
 
 
@@ -322,6 +452,12 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
     s->user2_reg = FIELD_DP32(0, SPI_USER2, COMMAND_BITLEN, 4);
     s->user2_reg = FIELD_DP32(s->user2_reg, SPI_USER2, COMMAND_VALUE, 0);
     s->status_reg = 0;
+    s->addr_reg = s->ctrl_reg = s->ctrl1_reg = s->ctrl2_reg = 0;
+    s->user_reg = s->mosi_dlen_reg = s->miso_dlen_reg = 0;
+    s->clock_reg = s->slave_reg = 0;
+    memset(s->data_reg, 0, sizeof(s->data_reg));
+    memset(&s->dma, 0, sizeof(s->dma));
+    esp32_spi_update_irq(s);
 }
 
 static void esp32_spi_realize(DeviceState *dev, Error **errp)
@@ -337,6 +473,7 @@ static void esp32_spi_init(Object *obj)
                           TYPE_ESP32_SPI, ESP32_SPI_REG_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    sysbus_init_irq(sbd, &s->dma_irq);
 
     s->spi = ssi_create_bus(DEVICE(s), "spi");
     qdev_init_gpio_out_named(DEVICE(s), &s->cs_gpio[0], SSI_GPIO_CS, ESP32_SPI_CS_COUNT);

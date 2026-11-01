@@ -9,10 +9,12 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> i2c <i2c_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> armado <armado_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> rmt <rmt_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> spi_dma <micropython.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -626,6 +628,140 @@ def rmt(qemu: str, firmware: str) -> int:
     return 1 if errores else 0
 
 
+def comprobar_spi_dma(tramas: list, texto: str) -> list[str]:
+    """Exige todo MOSI VSPI, incluidos los ceros de read(4), y su resultado RX."""
+    errores = []
+    if not tramas or not es_hola(tramas[0], 6):
+        errores.append("sin HOLA v6")
+    for linea in ("MISO=ffffffff", "TALLER-OK spi_dma"):
+        if len(re.findall(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE)) != 1:
+            errores.append(f"sin línea única {linea}")
+    if "Traceback" in texto or "TALLER-FALLO" in texto:
+        errores.append("MicroPython anunció un fallo")
+    spi = []
+    tiempos = []
+    for tipo, version, t_ns, carga in tramas:
+        if tipo != 3:
+            continue
+        if version != 6 or len(carga) < 2 or carga[0] != 3:
+            errores.append("trama SPI inválida o fuera de VSPI")
+            continue
+        spi.append(carga[1:])
+        tiempos.append(t_ns)
+    esperado = b"abcd" + bytes(range(256)) * 160 + b"\0" * 4
+    datos = b"".join(spi)
+    if datos != esperado:
+        errores.append(f"MOSI VSPI distinto: {len(datos)} bytes, esperados {len(esperado)}")
+    if tiempos != sorted(tiempos):
+        errores.append("tiempos SPI decrecientes")
+    return errores
+
+
+def ejecutar_raw_paste(sock: socket.socket, codigo: str, timeout_s: float = 60) -> str:
+    """REPL raw paste con crédito por ventana, EOF comprobado y plazo total."""
+    fin = time.monotonic() + timeout_s
+
+    def leer(n):
+        datos = bytearray()
+        while len(datos) < n:
+            restante = fin - time.monotonic()
+            if restante <= 0:
+                raise TimeoutError("plazo agotado en REPL raw paste")
+            sock.settimeout(restante)
+            trozo = sock.recv(n - len(datos))
+            if not trozo:
+                raise EOFError("UART cerrada durante REPL raw paste")
+            datos.extend(trozo)
+        return bytes(datos)
+
+    def hasta(marca):
+        datos = bytearray()
+        while not datos.endswith(marca):
+            datos.extend(leer(1))
+        return bytes(datos[:-len(marca)])
+
+    sock.sendall(b"\r\x03\x03\x01")
+    hasta(b"raw REPL; CTRL-B to exit\r\n>")
+    sock.sendall(b"\x05A\x01")
+    if leer(2) != b"R\x01":
+        raise ValueError("MicroPython no admite raw paste")
+    ventana = int.from_bytes(leer(2), "little")
+    if not ventana:
+        raise ValueError("ventana raw paste nula")
+    datos = codigo.encode("utf-8")
+    credito, pos = ventana, 0
+    while pos < len(datos):
+        if credito == 0:
+            if leer(1) != b"\x01":
+                raise ValueError("MicroPython interrumpió raw paste")
+            credito += ventana
+        n = min(credito, len(datos) - pos)
+        sock.sendall(datos[pos:pos + n])
+        pos += n
+        credito -= n
+    sock.sendall(b"\x04")
+    while True:
+        control = leer(1)
+        if control == b"\x04":
+            break
+        if control != b"\x01":
+            raise ValueError(f"control raw paste inesperado: {control!r}")
+    salida = hasta(b"\x04")
+    errores = hasta(b"\x04")
+    hasta(b">")
+    if errores:
+        raise RuntimeError(errores.decode(errors="replace"))
+    return salida.decode(errors="replace")
+
+
+def spi_dma(qemu: str, firmware: str) -> int:
+    # MicroPython puede crear su VFS. Cada prueba trabaja con una copia privada.
+    with tempfile.TemporaryDirectory() as directorio:
+        imagen = Path(directorio) / "micropython.flash.bin"
+        shutil.copyfile(firmware, imagen)
+        if imagen.stat().st_size != 4 * 1024 * 1024:
+            raise ValueError("SPI DMA requiere una imagen completa de flash de 4 MiB")
+        tmp, proc, p_uart, p_puente = lanzar(qemu, str(imagen), con_puente=True)
+        tramas: list = []
+        parar = threading.Event()
+        s_puente = s_uart = hilo = None
+        texto = ""
+        try:
+            s_puente = conectar(p_puente, proc)
+            hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+            hilo.start()
+            s_uart = conectar(p_uart, proc)
+            arranque = leer_uart_hasta(s_uart, [">>> "], 60)
+            if ">>> " not in arranque:
+                raise TimeoutError("sin REPL MicroPython: " + arranque[-1000:])
+            programa = Path(__file__).with_name("spi_dma_micropython.py").read_text(encoding="utf-8")
+            texto = ejecutar_raw_paste(s_uart, programa)
+            # La UART y el puente son sockets distintos: drenar el último SPI.
+            fin = time.monotonic() + 2
+            while time.monotonic() < fin:
+                if sum(len(c) - 1 for tp, _, _, c in tramas if tp == 3 and c) >= 40968:
+                    break
+                time.sleep(0.01)
+        except (OSError, EOFError, ValueError, RuntimeError) as exc:
+            texto += "\nTALLER-FALLO " + str(exc)
+        finally:
+            proc.kill()
+            proc.wait()
+            if hilo is not None:
+                hilo.join(timeout=2)
+            parar.set()
+            for conexion in (s_puente, s_uart):
+                if conexion is not None:
+                    conexion.close()
+            tmp.cleanup()
+        errores = comprobar_spi_dma(tramas, texto)
+        for error in errores:
+            print("FALLO", error)
+        print("FALLO spi_dma\n" + texto[-1500:] if errores else
+              "OK spi_dma: abcd, 40960 bytes exactos y MISO=ffffffff")
+        return 1 if errores else 0
+
+
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
     if modo == "humo":
@@ -642,4 +778,6 @@ if __name__ == "__main__":
         sys.exit(armado(qemu, sys.argv[3]))
     if modo == "rmt":
         sys.exit(rmt(qemu, sys.argv[3]))
+    if modo == "spi_dma":
+        sys.exit(spi_dma(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))

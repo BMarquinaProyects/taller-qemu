@@ -474,12 +474,18 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
             DR_REG_SPI0_BASE, DR_REG_SPI1_BASE, DR_REG_SPI2_BASE, DR_REG_SPI3_BASE
         };
         qdev_prop_set_uint8(DEVICE(&s->spi[i]), "index", i); /* Taller */
+        s->spi[i].dma_chan_sel = &s->dport.spi_dma_chan_sel_reg;
         qdev_realize(DEVICE(&s->spi[i]), &s->periph_bus, &error_fatal);
 
         esp32_soc_add_periph_device(sys_mem, &s->spi[i], spi_base[i]);
 
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi[i]), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_SPI0_INTR_SOURCE + i));
+        if (i >= 1) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi[i]), 1,
+                               qdev_get_gpio_in(intmatrix_dev,
+                                               ETS_SPI1_DMA_INTR_SOURCE + i - 1));
+        }
     }
 
     /* Taller: si existe el chardev "taller-puente", activar el puente y colgar un

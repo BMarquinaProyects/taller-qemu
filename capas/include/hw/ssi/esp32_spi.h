@@ -3,6 +3,7 @@
 #include "hw/hw.h"
 #include "hw/registerfields.h"
 #include "hw/ssi/ssi.h"
+#include "hw/ssi/taller_spi_dma.h"
 
 #define TYPE_ESP32_SPI "ssi.esp32.spi"
 #define ESP32_SPI(obj) OBJECT_CHECK(Esp32SpiState, (obj), TYPE_ESP32_SPI)
@@ -15,6 +16,7 @@ typedef struct Esp32SpiState {
 
     MemoryRegion iomem;
     qemu_irq irq;
+    qemu_irq dma_irq;
     qemu_irq cs_gpio[ESP32_SPI_CS_COUNT];
     int num_cs;
     SSIBus *spi;
@@ -30,6 +32,10 @@ typedef struct Esp32SpiState {
     uint32_t mosi_dlen_reg;
     uint32_t miso_dlen_reg;
     uint32_t pin_reg;
+    uint32_t clock_reg;
+    uint32_t slave_reg;
+    TallerSpiDma dma;
+    const uint32_t *dma_chan_sel; /* Registro DPORT, propiedad del SoC. */
     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
     uint8_t index; /* Taller: 0-3 (SPI0..SPI3), para el puente */
 } Esp32SpiState;
@@ -60,6 +66,7 @@ REG32(SPI_STATUS, 0x10)
 
 REG32(SPI_CTRL1, 0x0c)
 REG32(SPI_CTRL2, 0x14)
+REG32(SPI_CLOCK, 0x18)
 REG32(SPI_USER, 0x1C)
     FIELD(SPI_USER, COMMAND, 31, 1)
     FIELD(SPI_USER, ADDR, 30, 1)

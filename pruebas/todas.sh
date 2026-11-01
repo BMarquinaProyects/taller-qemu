@@ -14,4 +14,10 @@ python3 pruebas/qemu_prueba.py "$Q" i2c pruebas/i2c_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" rmt pruebas/rmt_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" humo pruebas/rmt_prueba.flash.bin "TALLER-OK rmt" || r=1
+MPY="${MICROPYTHON_FLASH:-pruebas/micropython.flash.bin}"
+if [[ -f "$MPY" || -n "${MICROPYTHON_FLASH:-}" ]]; then
+  python3 pruebas/qemu_prueba.py "$Q" spi_dma "$MPY" || r=1
+else
+  echo 'OMITIDA spi_dma: preparar pruebas/micropython.flash.bin (ver README)'
+fi
 exit $r

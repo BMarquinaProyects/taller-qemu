@@ -14,3 +14,11 @@ Cambios de Taller (resumen):
 - Periférico SSI en SPI2/SPI3 conectado al puente (`hw/ssi/esp32_spi.c`, `hw/xtensa/esp32.c`).
 - RMT TX del ESP32 clásico, con RAM de símbolos, umbral ping-pong, tiempo virtual
   e IRQ; puente v6 con trenes RMT completos (`hw/misc/esp32_rmt.c`).
+- SPI DMA TX/RX para SPI2/HSPI y SPI3/VSPI: registros DMA, cadenas de
+  descriptores en SRAM, devolución de owner, EOF, errores e IRQ separadas de
+  trans_done. DPORT conserva la selección de canal. Lógica independiente en
+  `include/hw/ssi/taller_spi_dma.h`, adaptador en `hw/ssi/esp32_spi.c` y
+  selección en `hw/misc/esp32_dport.c`. Versión 0.7.0, protocolo del puente v6.
+- Prueba MicroPython v1.29.0 mediante REPL raw paste, con verificación exacta
+  de 40 960 bytes y recepción MISO. El firmware externo no se distribuye aquí.
+- Matriz de interrupciones (`hw/xtensa/esp32_intc.c`): nivel por fuente y líneas como OR de sus fuentes, recalculadas al reasignar.

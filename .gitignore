@@ -4,3 +4,5 @@ __pycache__/
 desktop.ini
 carpeta-*.ico
 pruebas/*/build/
+pruebas/micropython.flash.bin
+pruebas/ESP32_GENERIC-*.bin
