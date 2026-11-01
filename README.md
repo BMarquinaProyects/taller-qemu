@@ -64,7 +64,7 @@ se ignoran en la máquina C3.
 
 `pruebas/c3_gpio_prueba/c3_gpio_prueba.ino` produce tres pulsos completos en
 GPIO8, lee GPIO9 con INPUT_PULLUP, espera ENTRADA(9, 0), vuelve a leer y termina
-con `TALLER-OK c3`. El verificador exige HOLA v6, niveles/salidas limitados a
+con `TALLER-OK c3`. El verificador exige HOLA v7, niveles/salidas limitados a
 22 bits, tres pulsos habilitados, tiempos no decrecientes y las líneas únicas
 `C3-ANTES=1`, `C3-DESPUES=0`, `TALLER-OK c3`, en ese orden.
 
@@ -108,20 +108,21 @@ las once pruebas previas con los binarios recompilados**: aquí no se compiló
 QEMU entero ni había un ejecutable RISC-V32 instalado. Las pruebas aisladas
 no certifican arranque, registro QOM ni comportamiento temporal integrado.
 
-## Protocolo del puente (v6)
+## Protocolo del puente (v7)
 
 Con `-chardev socket,id=taller-puente,host=127.0.0.1,port=<p>,server=on,wait=on`, QEMU envía tramas
-little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=6, u16 longitud_carga, u64 t_ns`.
+little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=7, u16 longitud_carga, u64 t_ns`.
 
 | tipo | carga |
 |---|---|
-| 1 HOLA | `u32 version_protocolo` (= 6) |
+| 1 HOLA | `u32 version_protocolo` (= 7) |
 | 2 GPIO | `u64 niveles, u64 salidas` (bit n = GPIO n) |
 | 3 SPI  | `u8 bus` (2 = HSPI, 3 = VSPI) + bytes MOSI de una transacción |
 | 4 PWM | `u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm` (9 bytes, sin relleno) |
 | 5 I2C_ESCRITURA | `u8 bus, u8 direccion, bytes…`: escritura completa, incluido el puntero; hasta 4094 bytes de datos por trama |
 | 6 DISPARO | `u8 pin_disparo`; `t_ns` es el instante virtual del flanco que inicia el tren |
 | 7 RMT | `u8 canal, u8 gpio, u32 tick_ps, u32 símbolos…`: símbolos crudos LE; `t_ns` es el inicio de TX; se envía al terminar |
+| 8 TIEMPO | sin carga; `t_ns` es la hora virtual. Latido cada 10 ms virtuales desde HOLA (v7) |
 | 16 ENTRADA (hacia QEMU) | `u8 pin, u8 nivel`: nivel externo de un pin de entrada (botones, sensores) |
 | 17 ANALOGICO (hacia QEMU) | `u8 gpio, u16 valor` (3 bytes, sin relleno): muestra cruda ADC1, saturada a 4095 |
 | 18 I2C_DISPOSITIVO (hacia QEMU) | `u8 bus, u8 direccion, u8 activo`: alta o baja de una dirección |
@@ -130,6 +131,9 @@ little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=6, u16 longitud
 
 Sin ese chardev, QEMU se comporta como el de Espressif.
 
+La versión 7 añade TIEMPO: un latido cada 10 ms virtuales con la hora del ESP32, para que el
+receptor la sepa aunque el firmware no toque ningún periférico (el arranque o un programa que solo
+usa el Serial). Taller lo usa como reloj de los escenarios. Un receptor que no conozca el tipo 8 lo salta.
 La versión 6 añade RMT a la versión 5, conserva las cargas anteriores y acepta las
 tramas entrantes anteriores. HOLA y todas las tramas salientes anuncian 6.
 La versión 5 añade ENTRADA_ARMADA y DISPARO a la versión 4, conservando sus cargas.
@@ -282,7 +286,7 @@ bash pruebas/todas.sh /ruta/qemu-system-xtensa
 escribe `b"abcd"`, escribe `bytes(range(256)) * 160`, lee cuatro bytes y exige
 `ffffffff`; termina con `TALLER-OK spi_dma`. El modo `spi_dma` introduce ese
 programa por REPL raw paste, con control de ventana y plazo de espera. Exige
-HOLA v6 y **40968 bytes exactos de VSPI**: los cuatro iniciales, el framebuffer
+HOLA v7 y **40968 bytes exactos de VSPI**: los cuatro iniciales, el framebuffer
 y los cuatro ceros MOSI que genera `read(4)`. Rechaza pérdidas, sobrantes,
 cambios de orden y excepciones aunque aparezca la marca de éxito.
 Cada ejecución usa una copia temporal de la flash para proteger la imagen

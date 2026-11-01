@@ -94,6 +94,18 @@ static void enviar(uint8_t tipo, const uint8_t *carga, uint16_t largo)
     enviar_en(tipo, carga, largo, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
+/* TIEMPO (v7): latido con la hora virtual, cada TALLER_PUENTE_LATIDO_NS. */
+static QEMUTimer *latido;
+static int64_t siguiente_latido;
+
+static void latir(void *opaque)
+{
+    /* Cadencia fija desde el plazo anterior: el retraso de un disparo no se acumula. */
+    enviar(TALLER_TRAMA_TIEMPO, NULL, 0);
+    siguiente_latido += TALLER_PUENTE_LATIDO_NS;
+    timer_mod_ns(latido, siguiente_latido);
+}
+
 void taller_puente_disparo(uint8_t pin, int64_t t_ns)
 {
     if (!puente_activo) {
@@ -143,6 +155,9 @@ void taller_puente_iniciar(Chardev *chr, TallerPuenteReceptor receptor,
     puente_activo = true;
     stl_le_p(version, TALLER_PUENTE_VERSION);
     enviar(TALLER_TRAMA_HOLA, version, sizeof(version));
+    latido = timer_new_ns(QEMU_CLOCK_VIRTUAL, latir, NULL);
+    siguiente_latido = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TALLER_PUENTE_LATIDO_NS;
+    timer_mod_ns(latido, siguiente_latido);
 }
 
 bool taller_puente_activo(void)

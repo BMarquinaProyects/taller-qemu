@@ -8,6 +8,8 @@ from pathlib import Path
 
 import qemu_prueba
 
+V = qemu_prueba.VERSION_PUENTE  # versión del puente que se prueba
+
 
 COLORES8 = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255),
             (0, 0, 0), (1, 2, 3), (128, 64, 32), (255, 255, 0)]
@@ -27,9 +29,9 @@ def carga(colores, tick=100000, gpio=13):
 
 class PruebaRmt(unittest.TestCase):
     def setUp(self):
-        self.tramas = [(1, 6, 0, struct.pack("<I", 6)),
-                       (7, 6, 1000, carga(COLORES8)),
-                       (7, 6, 900000, carga(COLORES30))]
+        self.tramas = [(1, V, 0, struct.pack("<I", V)),
+                       (7, V, 1000, carga(COLORES8)),
+                       (7, V, 900000, carga(COLORES30))]
         self.texto = "T_SHOW=240\r\nTALLER-OK rmt\r\n"
 
     def comprobar(self, tramas=None, texto=None):
@@ -44,15 +46,15 @@ class PruebaRmt(unittest.TestCase):
             self.assertEqual(self.comprobar(texto=self.texto.replace("240", str(t))), [])
         trama = self.tramas[2]
         for limite in (6 + 32 * 4, 6 + 719 * 4):
-            trozos = [(7, 6, trama[2], trama[3][:limite]),
-                      (7, 6, trama[2], trama[3][:6] + trama[3][limite:])]
+            trozos = [(7, V, trama[2], trama[3][:limite]),
+                      (7, V, trama[2], trama[3][:6] + trama[3][limite:])]
             self.assertEqual(self.comprobar(tramas=self.tramas[:2] + trozos), [])
 
     def test_rechaza_colores_cortos_gpio_version_y_cargas_invalidas(self):
         for c in (carga(COLORES30[:-1]), carga(COLORES30[::-1]),
                   carga(COLORES30, gpio=12), carga(COLORES30, tick=0), b"", b"1234567"):
             with self.subTest(carga=len(c)):
-                self.assertTrue(self.comprobar(tramas=self.tramas[:2] + [(7, 6, 900000, c)]))
+                self.assertTrue(self.comprobar(tramas=self.tramas[:2] + [(7, V, 900000, c)]))
         self.assertTrue(self.comprobar(tramas=self.tramas[:2]))
         self.assertTrue(self.comprobar(tramas=self.tramas + [self.tramas[2]]))
         self.assertTrue(self.comprobar(tramas=[(1, 5, 0, struct.pack("<I", 5))] + self.tramas[1:]))
@@ -83,18 +85,18 @@ class PruebaRmt(unittest.TestCase):
         for inicio in (999, 200000):
             with self.subTest(inicio=inicio):
                 self.assertTrue(self.comprobar(tramas=self.tramas[:2] +
-                                              [(7, 6, inicio, carga(COLORES30))]))
+                                              [(7, V, inicio, carga(COLORES30))]))
 
     def test_modos_previos_aceptan_hola6(self):
         hola = self.tramas[0]
         self.assertTrue(qemu_prueba.es_hola(hola, 5))
         self.assertEqual(qemu_prueba.comprobar_pwm(
-            [hola, (4, 6, 0, struct.pack("<BII", 13, 50000, 50000))], "TALLER-OK pwm"), [])
+            [hola, (4, V, 0, struct.pack("<BII", 13, 50000, 50000))], "TALLER-OK pwm"), [])
         self.assertEqual(qemu_prueba.comprobar_i2c(
-            [hola, (5, 6, 0, b"\x00\x3c\x00\xaf")],
+            [hola, (5, V, 0, b"\x00\x3c\x00\xaf")],
             "ENCONTRADO 0x3C\nLEIDO=60,61\nTALLER-OK i2c\n"), [])
         self.assertEqual(qemu_prueba.comprobar_armado(
-            [hola, (6, 6, 1, b"\x04"), (6, 6, 2, b"\x04"), (6, 6, 3, b"\x05")],
+            [hola, (6, V, 1, b"\x04"), (6, V, 2, b"\x04"), (6, V, 3, b"\x05")],
             "DHT=80,80,50,70\nDHT2=80,80,50,70\nCORTO=SIN_RESPUESTA\n"
             "ECO=1166\nECO_CORTO=0\nTALLER-OK armado\n"), [])
 

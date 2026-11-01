@@ -29,11 +29,15 @@ EFUSE_ECO3 = bytearray(124)
 EFUSE_ECO3[13] = 0x80
 EFUSE_ECO3[22] = 0x10
 CABECERA = struct.Struct("<BBHQ")  # tipo, version, longitud_carga, t_ns
+# Versión del protocolo del puente que compila este repo (TALLER_PUENTE_VERSION).
+VERSION_PUENTE = 7
+TIPO_TIEMPO = 8
+LATIDO_NS = 10_000_000
 
 
 def es_hola(trama: tuple, minima: int) -> bool:
     tipo, version, _, carga = trama
-    return tipo == 1 and minima <= version <= 6 and carga == struct.pack("<I", version)
+    return tipo == 1 and minima <= version <= VERSION_PUENTE and carga == struct.pack("<I", version)
 
 
 def puerto_libre() -> int:
@@ -114,10 +118,10 @@ def lanzar_c3(qemu: str, firmware: str):
 
 
 def comprobar_c3_gpio(tramas: list, texto: str) -> list[str]:
-    """Exige HOLA v6, tres pulsos GPIO8 habilitados y lectura GPIO9 1→0."""
+    """Exige HOLA v7, tres pulsos GPIO8 habilitados y lectura GPIO9 1→0."""
     errores = []
     if not tramas or not es_hola(tramas[0], 6):
-        errores.append("sin HOLA v6")
+        errores.append("sin HOLA v7")
     lineas = ("C3-ANTES=1", "C3-DESPUES=0", "TALLER-OK c3")
     posiciones = []
     for linea in lineas:
@@ -134,8 +138,8 @@ def comprobar_c3_gpio(tramas: list, texto: str) -> list[str]:
     niveles = []
     ultimo_habilitado = False
     for tipo, version, _, carga in tramas:
-        if version != 6:
-            errores.append("trama con versión distinta de 6")
+        if version != VERSION_PUENTE:
+            errores.append(f"trama con versión distinta de {VERSION_PUENTE}")
         if tipo != 2:
             continue
         if len(carga) != 16:
@@ -188,7 +192,7 @@ def c3_gpio(qemu: str, firmware: str) -> int:
     for error in errores:
         print("FALLO", error)
     print("FALLO c3_gpio\n" + texto[-1500:] if errores else
-          "OK c3_gpio: GPIO8 tres pulsos; GPIO9 INPUT_PULLUP 1→0; HOLA v6")
+          "OK c3_gpio: GPIO8 tres pulsos; GPIO9 INPUT_PULLUP 1→0; HOLA v7")
     return 1 if errores else 0
 
 
@@ -264,7 +268,14 @@ def puente(qemu: str, firmware: str) -> int:
         esperado = bytes([0xA5, 0x5A, 0x00, 0xFF]) + bytes(i & 0xFF for i in range(1000))
         if spi != esperado:
             errores.append("los bytes SPI no coinciden con los enviados")
-    print(f"tramas: {len(tramas)} (GPIO {len(gpio)}, SPI {sum(1 for t in tramas if t[0] == 3)})")
+    # TIEMPO (v7): latidos sin carga cada 10 ms virtuales (con icount, un disparo puede llegar
+    # unos µs tarde; la cadencia es fija y no acumula el retraso).
+    latidos = [t for tp, _, t, c in tramas if tp == TIPO_TIEMPO and not c]
+    huecos = [b - a for a, b in zip(latidos, latidos[1:])]
+    if len(latidos) < 3 or not all(0.9 * LATIDO_NS <= h <= 1.1 * LATIDO_NS for h in huecos):
+        errores.append(f"latidos TIEMPO: {len(latidos)}, huecos {huecos[:5]}")
+    print(f"tramas: {len(tramas)} (GPIO {len(gpio)}, SPI {sum(1 for t in tramas if t[0] == 3)}, "
+          f"TIEMPO {len(latidos)})")
     for e in errores:
         print("FALLO", e)
     if not errores:
@@ -306,7 +317,7 @@ def comprobar_i2c(tramas: list, texto: str) -> list[str]:
     for linea in ("LEIDO=60,61", "TALLER-OK i2c"):
         if not re.search(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE):
             errores.append(f"sin línea {linea} en la UART")
-    if not any(tp == 5 and v in (4, 5, 6) and c == b"\x00\x3c\x00\xaf"
+    if not any(tp == 5 and 4 <= v <= VERSION_PUENTE and c == b"\x00\x3c\x00\xaf"
                for tp, v, _, c in tramas):
         errores.append("sin I2C_ESCRITURA(0, 0x3C, 00 AF)")
     return errores
@@ -410,7 +421,7 @@ def entrada(qemu: str, firmware: str) -> int:
         proc.wait()
         tmp.cleanup()
     hola = [struct.unpack("<I", c)[0] for tp, _, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola in ([2], [3], [4], [5], [6])
+    ok = all(r for _, r in pasos) and len(hola) == 1 and 2 <= hola[0] <= VERSION_PUENTE
     print("pasos:", pasos, "HOLA:", hola)
     print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
     return 0 if ok else 1
@@ -446,9 +457,8 @@ def analogico(qemu: str, firmware: str) -> int:
         tmp.cleanup()
 
     hola = [(v, c) for tp, v, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola in (
-        [(3, struct.pack("<I", 3))], [(4, struct.pack("<I", 4))],
-        [(5, struct.pack("<I", 5))], [(6, struct.pack("<I", 6))])
+    ok = all(r for _, r in pasos) and len(hola) == 1 and 3 <= hola[0][0] <= VERSION_PUENTE \
+        and hola[0][1] == struct.pack("<I", hola[0][0])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK analogico" if ok else "FALLO analogico\n" + buf[0][-600:])
     return 0 if ok else 1
@@ -465,7 +475,7 @@ def comprobar_pwm(tramas: list, texto: str) -> list[str]:
     for tipo, version, _, carga in tramas:
         if tipo != 4:
             continue
-        if version not in (3, 4, 5, 6) or len(carga) != 9:
+        if not 3 <= version <= VERSION_PUENTE or len(carga) != 9:
             errores.append(f"trama PWM inválida: versión {version}, {len(carga)} bytes")
             continue
         gpio, frecuencia_mhz, ciclo_ppm = struct.unpack("<BII", carga)
@@ -543,7 +553,7 @@ def comprobar_armado(tramas: list, texto: str) -> list[str]:
     if "TALLER-FALLO" in texto:
         errores.append("el firmware anunció TALLER-FALLO")
     disparos = [(v, c) for tp, v, _, c in tramas if tp == 6]
-    if (len(disparos) != 3 or any(v not in (5, 6) or len(c) != 1 for v, c in disparos) or
+    if (len(disparos) != 3 or any(not 5 <= v <= VERSION_PUENTE or len(c) != 1 for v, c in disparos) or
             [c for _, c in disparos].count(b"\x04") != 2 or
             [c for _, c in disparos].count(b"\x05") != 1):
         errores.append(f"DISPARO incorrectos (esperados pin 4: 2, pin 5: 1): {disparos}")
@@ -657,7 +667,7 @@ def comprobar_rmt(tramas: list, texto: str) -> list[str]:
         if tipo != 7:
             anterior = None
             continue
-        if version != 6 or len(carga) < 10 or len(carga) > 65535 or (len(carga) - 6) % 4:
+        if version != VERSION_PUENTE or len(carga) < 10 or len(carga) > 65535 or (len(carga) - 6) % 4:
             errores.append("trama RMT inválida")
             anterior = None
             continue
@@ -734,7 +744,7 @@ def comprobar_spi_dma(tramas: list, texto: str) -> list[str]:
     """Exige todo MOSI VSPI, incluidos los ceros de read(4), y su resultado RX."""
     errores = []
     if not tramas or not es_hola(tramas[0], 6):
-        errores.append("sin HOLA v6")
+        errores.append("sin HOLA v7")
     for linea in ("MISO=ffffffff", "TALLER-OK spi_dma"):
         if len(re.findall(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE)) != 1:
             errores.append(f"sin línea única {linea}")
@@ -745,7 +755,7 @@ def comprobar_spi_dma(tramas: list, texto: str) -> list[str]:
     for tipo, version, t_ns, carga in tramas:
         if tipo != 3:
             continue
-        if version != 6 or len(carga) < 2 or carga[0] != 3:
+        if version != VERSION_PUENTE or len(carga) < 2 or carga[0] != 3:
             errores.append("trama SPI inválida o fuera de VSPI")
             continue
         spi.append(carga[1:])

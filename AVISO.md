@@ -25,7 +25,7 @@ Cambios de Taller (resumen):
 - GPIO del ESP32-C3 independiente del clásico, con 22 pines, registros OUT/ENABLE/IN,
   W1TS/W1TC, PAD_DRIVER en `0x74 + 4·n`, selección de salida conservada en
   `0x554 + 4·n` y trenes armados reutilizados (`hw/gpio/esp32c3_gpio.c` y cabecera).
-- Máquina C3 conectada al chardev `taller-puente` con HOLA v6 (`hw/riscv/esp32c3.c`).
+- Máquina C3 conectada al chardev `taller-puente` (`hw/riscv/esp32c3.c`).
   El parser común entrega cargas a un receptor por máquina; el clásico conserva
   GPIO/ADC1/I2C y el C3 recibe GPIO y armados. No se modifica la matriz IRQ C3:
   el modelo base ya conserva niveles, aplica OR y recalcula al reasignar.
@@ -34,3 +34,5 @@ Cambios de Taller (resumen):
   flash de 4 MiB, modo `c3_gpio`, unitarias del modelo real y despacho de entradas.
   IO_MUX, IRQ GPIO, rutas periféricas y conexión C3 de LEDC/ADC/I2C/RMT/SPI2
   quedan pendientes; los modelos clásicos no se trasladan al C3.
+- Puente v7 (`hw/misc/taller_puente.c`): latido TIEMPO cada 10 ms virtuales con un
+  temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.0.

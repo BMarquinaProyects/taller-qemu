@@ -74,5 +74,5 @@ int main(void)
         tramas++;
     }
     assert(tramas == 2 && indice == 20000);
-    puts("OK emisor RMT: v6, LE, tiempo inicial y troceado de 20000 símbolos");
+    puts("OK emisor RMT: v7, LE, tiempo inicial y troceado de 20000 símbolos");
 }

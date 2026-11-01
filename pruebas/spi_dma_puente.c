@@ -32,6 +32,6 @@ int main(void)
     taller_puente_spi_fin(3); /* No enviar una trama vacía extra. */
     assert(total == 40960 && tramas == 10);
     for (unsigned i = 0; i < 40960; i++) { assert(recibido[i] == (i & 255)); }
-    puts("OK puente SPI real: 40960 bytes exactos en diez tramas v6");
+    puts("OK puente SPI real: 40960 bytes exactos en diez tramas v7");
     return 0;
 }

@@ -2,10 +2,10 @@
  * Puente de Taller: envía a un programa externo, por un chardev, lo que el firmware
  * hace con los pines (GPIO), SPI, PWM, I2C y RMT, con marca de tiempo virtual.
  *
- * Protocolo v6 (little-endian; v5 + RMT TX). Cabecera de 12 bytes:
- *   u8 tipo, u8 version (=6), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
+ * Protocolo v7 (little-endian; v6 + TIEMPO). Cabecera de 12 bytes:
+ *   u8 tipo, u8 version (=7), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
  * Tipos (QEMU -> programa externo):
- *   1 HOLA  carga: u32 version_protocolo (=6)
+ *   1 HOLA  carga: u32 version_protocolo (=7)
  *   2 GPIO  carga: u64 niveles, u64 salidas   (bit n = GPIO n)
  *   3 SPI   carga: u8 bus (2 = HSPI, 3 = VSPI) + bytes MOSI de una transacción (máx. 4096)
  *   4 PWM   carga: u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm (9 bytes, sin relleno)
@@ -19,6 +19,9 @@
  *           Se emite al terminar; t_ns = inicio del tren. Máx. 16382 símbolos
  *           por trama (65534 bytes). Trozos consecutivos repiten canal/gpio/tick
  *           y t_ns, sin indicador adicional de fin; no se parte un símbolo.
+ *   8 TIEMPO sin carga; t_ns = reloj virtual (desde v7). Latido cada 10 ms
+ *           virtuales desde HOLA: el receptor sabe la hora del ESP32 aunque
+ *           el firmware no toque ningún periférico (arranque, Serial puro).
  * Tipos (programa externo -> QEMU; t_ns se ignora):
  *  16 ENTRADA carga: u8 pin, u8 nivel  (nivel externo de un pin de entrada; t_ns se ignora)
  *             disponible desde v2
@@ -53,7 +56,9 @@
 
 #define TYPE_TALLER_SPI "taller.spi"
 #define TALLER_PUENTE_CHARDEV "taller-puente"
-#define TALLER_PUENTE_VERSION 6
+#define TALLER_PUENTE_VERSION 7
+/* Cada cuánto se manda TIEMPO, en ns de QEMU_CLOCK_VIRTUAL. */
+#define TALLER_PUENTE_LATIDO_NS (10 * 1000 * 1000)
 
 enum {
     TALLER_TRAMA_HOLA = 1,
@@ -63,6 +68,7 @@ enum {
     TALLER_TRAMA_I2C_ESCRITURA = 5,
     TALLER_TRAMA_DISPARO = 6,
     TALLER_TRAMA_RMT = 7,
+    TALLER_TRAMA_TIEMPO = 8,
     TALLER_TRAMA_ENTRADA = 16,
     TALLER_TRAMA_ANALOGICO = 17,
     TALLER_TRAMA_I2C_DISPOSITIVO = 18,

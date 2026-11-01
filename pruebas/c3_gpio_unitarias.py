@@ -11,13 +11,15 @@ from unittest import mock
 
 import qemu_prueba
 
+V = qemu_prueba.VERSION_PUENTE  # versión del puente que se prueba
+
 
 class PruebaVerificadorC3(unittest.TestCase):
     def setUp(self):
         self.texto = "C3-ANTES=1\r\nC3-DESPUES=0\r\nTALLER-OK c3\r\n"
-        self.tramas = [(1, 6, 0, struct.pack("<I", 6))]
+        self.tramas = [(1, V, 0, struct.pack("<I", V))]
         for i, nivel in enumerate((0, 1, 0, 1, 0, 1, 0)):
-            self.tramas.append((2, 6, i + 1, struct.pack("<QQ", nivel << 8, 1 << 8)))
+            self.tramas.append((2, V, i + 1, struct.pack("<QQ", nivel << 8, 1 << 8)))
 
     def comprobar(self, tramas=None, texto=None):
         fn = getattr(qemu_prueba, "comprobar_c3_gpio", None)
@@ -34,15 +36,15 @@ class PruebaVerificadorC3(unittest.TestCase):
     def test_rechaza_pulsos_perdidos_sobrantes_y_sin_enable(self):
         for tramas in (self.tramas[:-1], self.tramas[:-2],
                        self.tramas + self.tramas[-2:],
-                       self.tramas[:1] + [(2, 6, i, struct.pack("<QQ", n << 8, 0))
+                       self.tramas[:1] + [(2, V, i, struct.pack("<QQ", n << 8, 0))
                                           for i, n in enumerate((0, 1, 0, 1, 0, 1, 0))]):
             self.assertTrue(self.comprobar(tramas=tramas))
 
     def test_rechaza_protocolo_pin_fuera_de_rango_y_trama_rota(self):
         for trama in ((2, 5, 20, struct.pack("<QQ", 0, 256)),
-                      (2, 6, 20, struct.pack("<QQ", 1 << 22, 256)),
-                      (2, 6, 20, struct.pack("<QQ", 0, 1 << 22)),
-                      (2, 6, 20, b"\0")):
+                      (2, V, 20, struct.pack("<QQ", 1 << 22, 256)),
+                      (2, V, 20, struct.pack("<QQ", 0, 1 << 22)),
+                      (2, V, 20, b"\0")):
             self.assertTrue(self.comprobar(tramas=self.tramas + [trama]))
         self.assertTrue(self.comprobar(tramas=[(1, 5, 0, struct.pack("<I", 5))] + self.tramas[1:]))
         self.assertTrue(self.comprobar(tramas=self.tramas[:2] + self.tramas[:0:-1]))

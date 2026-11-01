@@ -10,6 +10,8 @@ import threading
 
 import qemu_prueba
 
+V = qemu_prueba.VERSION_PUENTE  # versión del puente que se prueba
+
 
 class PruebaSpiDmaC(unittest.TestCase):
     def test_logica_dma(self):
@@ -68,8 +70,8 @@ class PruebaSpiDmaC(unittest.TestCase):
 class PruebaVerificadorSpiDma(unittest.TestCase):
     def setUp(self):
         self.datos = b"abcd" + bytes(range(256)) * 160 + b"\0" * 4
-        self.tramas = [(1, 6, 0, struct.pack("<I", 6))]
-        self.tramas += [(3, 6, i, b"\x03" + self.datos[i:i + 4092])
+        self.tramas = [(1, V, 0, struct.pack("<I", V))]
+        self.tramas += [(3, V, i, b"\x03" + self.datos[i:i + 4092])
                         for i in range(0, len(self.datos), 4092)]
         self.texto = "MISO=ffffffff\r\nTALLER-OK spi_dma\r\n"
 
@@ -82,14 +84,14 @@ class PruebaVerificadorSpiDma(unittest.TestCase):
     def test_todos_los_bytes_en_orden_con_troceo_variable(self):
         self.assertEqual(self.comprobar(), [])
         self.assertEqual(self.comprobar(tramas=self.tramas[:1] +
-                                       [(3, 6, 1, b"\x03" + self.datos)]), [])
+                                       [(3, V, 1, b"\x03" + self.datos)]), [])
 
     def test_rechaza_perdidas_duplicados_bus_y_corrupcion(self):
         for datos in (self.datos[:-1], self.datos + b"\0", self.datos[::-1],
                       self.datos[:10] + b"\xff" + self.datos[11:]):
-            self.assertTrue(self.comprobar(tramas=self.tramas[:1] + [(3, 6, 1, b"\x03" + datos)]))
+            self.assertTrue(self.comprobar(tramas=self.tramas[:1] + [(3, V, 1, b"\x03" + datos)]))
         for carga in (b"", b"\x03", b"\x02" + self.datos):
-            self.assertTrue(self.comprobar(tramas=self.tramas[:1] + [(3, 6, 1, carga)]))
+            self.assertTrue(self.comprobar(tramas=self.tramas[:1] + [(3, V, 1, carga)]))
         self.assertTrue(self.comprobar(tramas=self.tramas + [self.tramas[-1]]))
         self.assertTrue(self.comprobar(tramas=[(1, 5, 0, struct.pack("<I", 5))] + self.tramas[1:]))
 
