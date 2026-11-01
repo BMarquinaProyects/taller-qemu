@@ -159,6 +159,8 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
   'esp32c3_rtc_cntl.c',
   'esp_hmac.c',
   'esp32c3_hmac.c',
+  'esp32c3_ledc.c',
+  'esp32c3_saradc.c',
   'taller_puente.c'
 ))
 

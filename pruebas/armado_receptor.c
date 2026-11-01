@@ -45,6 +45,17 @@ static void esp32_gpio_armar_entrada(const uint8_t *p, size_t n)
 }
 #include "clasico_receptor.h"
 typedef struct ESP32C3GPIOState { uint32_t in_externo; } ESP32C3GPIOState;
+typedef struct ESP32C3SarAdcState { uint16_t valores[5]; } ESP32C3SarAdcState;
+typedef struct Esp32C3MachineState {
+    ESP32C3GPIOState gpio;
+    ESP32C3SarAdcState saradc;
+} Esp32C3MachineState;
+static void esp32c3_saradc_fijar_valor(ESP32C3SarAdcState *s, uint8_t pin, uint16_t v)
+{
+    if (pin < 5) {
+        s->valores[pin] = MIN(v, 4095);
+    }
+}
 static void esp32c3_gpio_fijar_entrada(ESP32C3GPIOState *s, uint8_t pin, bool nivel)
 {
     assert(pin == 9);
@@ -94,8 +105,8 @@ int main(void)
     }
     assert(entradas == 1 && analogicos == 1 && altas == 1 && registros == 1);
 
-    /* Mismos tipos hacia C3: solo ENTRADA, aplicada al opaque seleccionado. */
-    ESP32C3GPIOState c3 = {0x3fffff}, otro_c3 = {0x3fffff};
+    /* GPIO y ANALOGICO aplicados solamente a la máquina C3 seleccionada. */
+    Esp32C3MachineState c3 = {.gpio = {0x3fffff}}, otro_c3 = {.gpio = {0x3fffff}};
     receptor_entrante = esp32c3_taller_recibir;
     receptor_opaque = &c3;
     entrada[12] = 9;
@@ -104,10 +115,28 @@ int main(void)
     recibir(adc, sizeof(adc), 1);
     recibir(alta, sizeof(alta), 1);
     recibir(espejo, sizeof(espejo), 1);
-    assert(!(c3.in_externo & (1u << 9)) && (otro_c3.in_externo & (1u << 9)));
+    assert(!(c3.gpio.in_externo & (1u << 9)) && (otro_c3.gpio.in_externo & (1u << 9)));
+    uint8_t adc_c3[] = {17, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8};
+    for (unsigned pin = 0; pin <= 4; pin++) {
+        adc_c3[12] = pin;
+        recibir(adc_c3, sizeof(adc_c3), 1);
+        assert(c3.saradc.valores[pin] == 2048 && otro_c3.saradc.valores[pin] == 0);
+    }
+    adc_c3[12] = 4;
+    adc_c3[13] = adc_c3[14] = 255;
+    recibir(adc_c3, sizeof(adc_c3), 2);
+    assert(c3.saradc.valores[4] == 4095);
+    adc_c3[12] = 5; /* ADC2 y los GPIO clásicos se ignoran. */
+    recibir(adc_c3, sizeof(adc_c3), 1);
+    adc_c3[12] = 34;
+    recibir(adc_c3, sizeof(adc_c3), 1);
+    for (unsigned tipo = 16; tipo <= 19; tipo++) {
+        esp32c3_taller_recibir(&c3, tipo, NULL, 0);
+    }
+    assert(c3.saradc.valores[0] == 2048 && c3.saradc.valores[4] == 4095);
     receptor_opaque = &otro_c3;
     recibir(entrada, sizeof(entrada), 4);
-    assert(!(otro_c3.in_externo & (1u << 9)));
+    assert(!(otro_c3.gpio.in_externo & (1u << 9)));
     assert(entradas == 1 && analogicos == 1 && altas == 1 && registros == 1);
     receptor_entrante = esp32_taller_recibir;
     receptor_opaque = NULL;

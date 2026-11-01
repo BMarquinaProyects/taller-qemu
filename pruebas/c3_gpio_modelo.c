@@ -15,6 +15,8 @@ typedef struct QEMUTimer { bool pendiente; int64_t plazo; } QEMUTimer;
 static int64_t ahora;
 static unsigned muestras, disparos;
 static uint64_t ultimo_out, ultimo_enable;
+static unsigned avisos_matriz;
+static void esp32c3_ledc_actualizar_senal(int senal) { avisos_matriz++; }
 static int64_t qemu_clock_get_ns(int reloj) { return ahora; }
 static void timer_mod_ns(QEMUTimer *t, int64_t plazo)
 {
@@ -95,6 +97,13 @@ int main(void)
     escribir(0x5a8, 0x12345678);
     escribir(0x5ac, 0xffffffff);
     assert(leer(0x554) == 0xdeadbeef && leer(0x5a8) == 0x12345678);
+    escribir(0x554 + 4 * 8, 45 | (1u << 8));
+    escribir(0x554 + 4 * 21, 45);
+    assert(esp32c3_gpio_pin_de_senal(&gpio, 45) == 8);
+    escribir(0x554 + 4 * 8, 128);
+    assert(esp32c3_gpio_pin_de_senal(&gpio, 45) == 21);
+    assert(esp32c3_gpio_pin_de_senal(&gpio, 50) == -1);
+    assert(esp32c3_gpio_pin_de_senal(&gpio, 128) == -1 && avisos_matriz >= 6);
     assert(leer(0x5ac) == 0);
     uint32_t in = gpio.in_externo;
     esp32c3_gpio_fijar_entrada(&gpio, 22, false);

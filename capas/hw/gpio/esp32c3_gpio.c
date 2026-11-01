@@ -10,8 +10,8 @@
  *
  * Taller, fase 6d: el original solo heredaba el GPIO clásico (STRAP).
  * Aquí hay 22 GPIO, OUT/ENABLE/IN, W1TS/W1TC, PAD_DRIVER y trenes armados.
- * PINn y FUNCn_OUT_SEL_CFG conservan lo escrito en sus offsets C3; todavía
- * no hay enrutado de señales periféricas, inversión, IRQ GPIO ni filtros.
+ * PINn y FUNCn_OUT_SEL_CFG conservan lo escrito en sus offsets C3; LEDC usa
+ * la selección de salida. No hay inversión, IRQ GPIO ni filtros.
  * IO_MUX sigue sin modelo en la máquina: lecturas cero/escrituras ignoradas;
  * IN usa el nivel externo, inicialmente alto, como en el clásico. No se
  * simulan resistencias ni INPUT_PULLDOWN. STRAP es una propiedad independiente.
@@ -22,9 +22,8 @@
  * - intmatrix ya guarda irq_levels, hace OR por línea y recalcula ambas
  *   líneas al reasignar, además de prioridad/umbral/enable. No tiene el fallo
  *   del clásico; no emula selección de IRQ por flanco.
- * - SPI1 sirve la flash; caché, eFuse y GDMA ya existen. No hay LEDC, ADC,
- *   I2C externo, RMT ni SPI2 de usuario conectados al puente en el C3.
- *   Necesitan modelos/registros/rutas propios del C3: no valen los clásicos.
+ * - SPI1 sirve la flash; caché, eFuse y GDMA ya existen. LEDC y ADC1 tienen
+ *   modelos C3 propios. I2C externo, RMT y SPI2 de usuario siguen pendientes.
  *   Según soc_caps.h del core 3.3.12: LEDC tiene 4 timers/6 canales LS;
  *   ADC1, GPIO0..4; I2C, un controlador; RMT, 2 TX/2 RX de 48 palabras.
  */
@@ -34,6 +33,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32c3_gpio.h"
 #include "hw/misc/taller_puente.h"
+#include "hw/misc/esp32c3_ledc.h"
 
 void esp32c3_gpio_fijar_entrada(ESP32C3GPIOState *s, uint8_t pin, bool nivel)
 {
@@ -55,6 +55,18 @@ void esp32c3_gpio_armar_entrada(ESP32C3GPIOState *s, const uint8_t *datos,
         datos[6] < ESP32C3_GPIO_PINES) {
         taller_armado_recibir(&s->armado, datos, largo);
     }
+}
+
+int esp32c3_gpio_pin_de_senal(ESP32C3GPIOState *s, int senal)
+{
+    if (s && senal >= 0 && senal < ESP32C3_GPIO_SENAL_SOFTWARE) {
+        for (unsigned pin = 0; pin < ESP32C3_GPIO_PINES; pin++) {
+            if ((s->seleccion_salida[pin] & 0xff) == (unsigned)senal) {
+                return pin; /* Como el clásico: primera ruta si hay varias. */
+            }
+        }
+    }
+    return -1;
 }
 
 static void esp32c3_gpio_paso_armado(void *opaque)
@@ -140,7 +152,12 @@ static void esp32c3_gpio_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     }
     if (esp32c3_gpio_en_tabla(addr, A_ESP32C3_GPIO_FUNC0_OUT_SEL_CFG)) {
-        s->seleccion_salida[(addr - A_ESP32C3_GPIO_FUNC0_OUT_SEL_CFG) / 4] = v;
+        unsigned pin = (addr - A_ESP32C3_GPIO_FUNC0_OUT_SEL_CFG) / 4;
+        unsigned anterior = s->seleccion_salida[pin] & 0xff;
+
+        s->seleccion_salida[pin] = v;
+        esp32c3_ledc_actualizar_senal(anterior);
+        esp32c3_ledc_actualizar_senal(v & 0xff);
         return;
     }
     v &= ESP32C3_GPIO_MASCARA;
@@ -179,6 +196,9 @@ static void esp32c3_gpio_reset_hold(Object *obj, ResetType type)
     memset(s->registro_pin, 0, sizeof(s->registro_pin));
     for (unsigned pin = 0; pin < ESP32C3_GPIO_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32C3_GPIO_SENAL_SOFTWARE;
+    }
+    for (unsigned senal = 45; senal <= 50; senal++) {
+        esp32c3_ledc_actualizar_senal(senal);
     }
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_del(s->trenes[i].timer);

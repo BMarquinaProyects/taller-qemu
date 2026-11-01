@@ -20,13 +20,12 @@ Ver `.github/workflows/qemu.yml`.
 (también en Windows). Si el directorio de trabajo tenía solo Xtensa, se vuelve a
 configurar para añadir RISC-V32; esa primera compilación necesita generar sus objetos.
 
-## ESP32-C3: GPIO y puente (fase 6d, paso 1)
+## ESP32-C3: GPIO, LEDC, ADC1 y puente (fase 6d)
 
 Usar **qemu-system-riscv32 -machine esp32c3**. El mismo chardev
-`taller-puente` activa HOLA y tramas GPIO **v6**, sin cambiar el protocolo ni la
-versión de publicación. Bit n significa GPIO n también en el C3. ENTRADA y
-ENTRADA_ARMADA llegan al GPIO de la máquina seleccionada mediante un receptor
-propio; las rutas GPIO, ADC1 e I2C del ESP32 clásico se conservan.
+`taller-puente` activa HOLA y las tramas GPIO, PWM y TIEMPO del protocolo **v7**. Bit n significa GPIO n también en el C3. ENTRADA,
+ENTRADA_ARMADA y ANALOGICO llegan a los modelos de la máquina seleccionada mediante
+un receptor propio; las rutas GPIO, ADC1 e I2C del ESP32 clásico se conservan.
 
 El modelo C3 tiene **22 GPIO (0..21)**. OUT (`0x04`), ENABLE (`0x20`),
 IN (`0x3c`) y sus W1TS/W1TC usan solamente esos 22 bits. `GPIO_PINn_REG`
@@ -50,17 +49,31 @@ Inventario de la máquina base `esp-develop-9.2.2-20260417` y trabajo pendiente:
 | IO_MUX / matriz GPIO | IO_MUX no está emulado: lecturas cero y escrituras ignoradas. PINn y selección de salida conservan valores; sin rutas periféricas ni inversión. La entrada externa empieza alta, como en el clásico; INPUT_PULLUP funciona con ese reposo, sin simular resistencias ni INPUT_PULLDOWN. |
 | Matriz IRQ | El original ya guarda `irq_levels`, aplica OR por línea y recalcula líneas vieja/nueva al reasignar. Conserva prioridad, umbral y habilitación; no tiene el fallo corregido del clásico. La selección de IRQ por flanco no está emulada. No se sustituye este archivo. |
 | UART y temporizadores | Dos UART con FIFO/timeout/IRQ; dos TIMG con T0 y watchdog; SYSTIMER con dos contadores y tres alarmas. Se conservan los modelos de Espressif. |
-| LEDC | Pendiente: cuatro timers, seis canales LS y señales 45..50; necesita registros/relojes C3 y resolución de la matriz de salida. |
-| ADC | Pendiente: ADC1 tiene cinco canales en GPIO0..4; ADC2, uno en GPIO5. Hace falta controlador C3 y nueva correspondencia de ANALOGICO; no sirve SENS del clásico. |
+| LEDC | `hw/misc/esp32c3_ledc.c`: cuatro timers y seis canales LS (registros de `soc/ledc_reg.h` del C3). Frecuencia = reloj (APB 80 MHz, RC_FAST 17,5 MHz o XTAL 40 MHz según `LEDC_CONF`) / (CLK_DIV en punto fijo 10.8 × 2^resolución); ciclo = DUTY (4 bits de fracción) / 2^resolución. Cada cambio efectivo manda PWM (tipo 4) al GPIO cuya `FUNCn_OUT_SEL_CFG` tiene la señal 45 + canal; cambiar de pin apaga el anterior. Sin fades, IRQ ni pulsos GPIO. |
+| ADC | `hw/misc/esp32c3_saradc.c`: ADC1 de una lectura (`ONETIME_SAMPLE`, `SAR1DATA_STATUS`, `ADC1_DONE` en INT_RAW/ST/CLR y su IRQ). ANALOGICO con GPIO 0..4 fija el valor crudo de 12 bits del canal 0..4; otros GPIO se ignoran. Sin ADC2, DMA ni calibración: `analogRead` devuelve el valor inyectado. |
 | I2C | Pendiente: un controlador externo; reutilización del espejo del puente tras adaptar registros/IRQ y conectar bus 0. |
 | RMT | Pendiente: dos canales TX y dos RX, 48 palabras por canal; necesita adaptar registros/RAM/IRQ y señales de salida 51/52. |
 | SPI | SPI1 emula la flash; no hay SPI2 de usuario conectado al puente. GDMA ya existe en la base, pero no equivale al DMA SPI del clásico: SPI2/GDMA y sus rutas quedan pendientes. |
 
 Las capacidades pendientes se contrastaron con `soc_caps.h`, `adc_channel.h`
-y `gpio_sig_map.h` del mismo core. En esta fase, ANALOGICO y las tramas I2C
-se ignoran en la máquina C3.
+y `gpio_sig_map.h` del mismo core. Las tramas I2C todavía se ignoran en la
+máquina C3.
 
-### Prueba C3
+### Pruebas C3
+
+- `c3_pwm` (`pruebas/c3_pwm_prueba/`): `ledcAttach(8, 50, 14)`, 5 % → 25 % →
+  `ledcChangeFrequency(8, 100, 14)` → 0 %. El verificador exige esa secuencia
+  en GPIO8, en orden y con un 0,5 % de margen, tramas PWM válidas para el C3 y
+  la línea única `TALLER-OK c3_pwm`.
+- `c3_analogico` (`pruebas/c3_analogico_prueba/`): `analogRead(0)` cada 20 ms;
+  el verificador inyecta ANALOGICO(0, 2048) y ANALOGICO(0, 4095) y exige las
+  lecturas 0 → 1900..2200 → 4000..4095 y `TALLER-OK c3_analogico`.
+- Las unitarias `c3_pwm_unitarias.py` y `c3_analogico_unitarias.py` prueban los
+  verificadores y compilan los modelos reales con adaptadores mínimos (necesitan
+  un compilador C: en Windows se saltan).
+
+Las imágenes se compilan como la de GPIO (abajo), cambiando el nombre del sketch.
+
 
 `pruebas/c3_gpio_prueba/c3_gpio_prueba.ino` produce tres pulsos completos en
 GPIO8, lee GPIO9 con INPUT_PULLUP, espera ENTRADA(9, 0), vuelve a leer y termina

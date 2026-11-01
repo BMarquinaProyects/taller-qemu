@@ -11,6 +11,8 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> rmt <rmt_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> spi_dma <micropython.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_gpio <c3_gpio_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_pwm <c3_pwm_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_analogico <c3_analogico_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -102,7 +104,7 @@ def lanzar_c3(qemu: str, firmware: str):
         imagen = Path(tmp.name) / "c3.flash.bin"
         shutil.copyfile(firmware, imagen)
         if imagen.stat().st_size != 4 * 1024 * 1024:
-            raise ValueError("c3_gpio requiere una flash completa de 4 MiB")
+            raise ValueError("C3 requiere una flash completa de 4 MiB")
         p_uart, p_puente = puerto_libre(), puerto_libre()
         cmd = [qemu, "-machine", "esp32c3", "-display", "none", "-monitor", "none",
                "-drive", f"file={imagen},if=mtd,format=raw",
@@ -881,10 +883,188 @@ def spi_dma(qemu: str, firmware: str) -> int:
         return 1 if errores else 0
 
 
+# --- ESP32-C3: LEDC (PWM) y ADC1 -------------------------------------------------------------
+
+# GPIO8: servo al 5 %, 25 %, cambio a 100 Hz y apagado (frecuencia en mHz, ciclo en ppm).
+PASOS_C3_PWM = ((50000, 49987), (50000, 250000), (100000, 250000), (100000, 0))
+
+
+def linea_unica(texto: str, linea: str) -> bool:
+    """La línea completa (con su salto) aparece exactamente una vez."""
+    return len(re.findall(r"^" + re.escape(linea) + r"\r?\n", texto, re.MULTILINE)) == 1
+
+
+def comprobar_c3_pwm(tramas: list, texto: str) -> list[str]:
+    """HOLA v7, tramas PWM válidas del C3 y la secuencia de GPIO8 en orden, con OK único."""
+    errores = []
+    if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
+        errores.append(f"sin HOLA v{VERSION_PUENTE}")
+    if not linea_unica(texto, "TALLER-OK c3_pwm") or "TALLER-FALLO" in texto:
+        errores.append("sin línea única TALLER-OK c3_pwm o fallo del firmware")
+    vistos = []
+    for tipo, version, _, carga in tramas:
+        if tipo != 4:
+            continue
+        if version != VERSION_PUENTE or len(carga) != 9:
+            errores.append(f"trama PWM inválida: versión {version}, {len(carga)} bytes")
+            continue
+        gpio, frecuencia, ciclo = struct.unpack("<BII", carga)
+        if gpio > 21 or ciclo > 1_000_000 or (frecuencia == 0 and ciclo):
+            errores.append(f"trama PWM imposible en el C3: GPIO{gpio}, {frecuencia} mHz, {ciclo} ppm")
+            continue
+        if gpio == 8 and (not vistos or vistos[-1] != (frecuencia, ciclo)):
+            vistos.append((frecuencia, ciclo))
+    # Cada paso, dentro de un 0,5 % (el divisor del LEDC es de punto fijo), y en orden.
+    i = 0
+    for frecuencia, ciclo in vistos:
+        if i < len(PASOS_C3_PWM):
+            f, c = PASOS_C3_PWM[i]
+            if abs(frecuencia - f) <= f // 200 and abs(ciclo - c) <= max(c // 200, 0):
+                i += 1
+    if i != len(PASOS_C3_PWM):
+        errores.append(f"GPIO8: secuencia PWM incompleta o desordenada: {vistos}")
+    return errores
+
+
+def c3_pwm(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_pwm", "TALLER-FALLO"], 60)
+        # La marca llega antes que su salto de línea: leer un poco más (y dejar que el lector
+        # del puente recoja las últimas tramas).
+        texto += leer_uart_hasta(s_uart, ["\n"], 0.5) if not texto.endswith("\n") else ""
+        time.sleep(0.5)
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_c3_pwm(tramas, texto)
+    print(f"tramas: {len(tramas)} (PWM {sum(1 for t in tramas if t[0] == 4)})")
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO c3_pwm\n" + texto[-800:] if errores else
+          "OK c3_pwm: GPIO8 50 Hz 5 % → 25 % → 100 Hz → apagado")
+    return 1 if errores else 0
+
+
+def comprobar_c3_analogico(tramas: list, texto: str) -> list[str]:
+    """HOLA v7 y lecturas de GPIO0 completas: 0, después 1900..2200 y después 4000..4095."""
+    errores = []
+    if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
+        errores.append(f"sin HOLA v{VERSION_PUENTE}")
+    if not linea_unica(texto, "TALLER-OK c3_analogico") or "TALLER-FALLO" in texto:
+        errores.append("sin línea única TALLER-OK c3_analogico o fallo del firmware")
+    lecturas = []
+    for linea in texto.splitlines():
+        if "C3-A=" not in linea:
+            continue
+        m = re.fullmatch(r"C3-A=([0-9]+)", linea.strip("\r"))
+        if not m:
+            errores.append(f"línea de lectura rota: {linea!r}")
+            continue
+        valor = int(m[1])
+        if valor > 4095:
+            errores.append(f"lectura fuera de 12 bits: {valor}")
+        lecturas.append(valor)
+    fases = [lambda v: v == 0, lambda v: 1900 <= v <= 2200, lambda v: 4000 <= v <= 4095]
+    if not lecturas or lecturas[0] != 0:
+        errores.append(f"la primera lectura no es 0: {lecturas[:3]}")
+    i = 0
+    for v in lecturas:
+        if i < len(fases) and fases[i](v):
+            i += 1
+    if i != len(fases):
+        errores.append(f"lecturas sin la secuencia 0 → medio → alto: {lecturas[:12]}")
+    return errores
+
+
+def esperar_c3_analogico(sock: socket.socket, buf: list, minimo: int, maximo: int,
+                         timeout_s: float) -> bool:
+    """Como esperar_analogico, con líneas C3-A=<valor>."""
+    inicio = len(buf[0])
+    fin = time.monotonic() + timeout_s
+    sock.settimeout(0.2)
+    while time.monotonic() < fin:
+        try:
+            trozo = sock.recv(4096)
+        except socket.timeout:
+            continue
+        if not trozo:
+            return False
+        buf[0] += trozo.decode(errors="replace")
+        for muestra in re.finditer(r"^C3-A=([0-9]+)\r?\n", buf[0], re.MULTILINE):
+            if muestra.start() >= inicio and minimo <= int(muestra[1]) <= maximo:
+                return True
+    return False
+
+
+def c3_analogico(qemu: str, firmware: str) -> int:
+    """Inyecta valores crudos en GPIO0 (ADC1 canal 0 del C3) con ANALOGICO."""
+    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+    tramas: list = []
+    parar = threading.Event()
+    buf = [""]
+    pasos = []
+    s_puente = s_uart = hilo = None
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        pasos.append(("inicial=0", esperar_c3_analogico(s_uart, buf, 0, 0, 60)))
+        s_puente.sendall(trama_analogico(0, 2048))
+        pasos.append(("medio=1900..2200", esperar_c3_analogico(s_uart, buf, 1900, 2200, 10)))
+        s_puente.sendall(trama_analogico(0, 4095))
+        pasos.append(("alto=4000..4095", esperar_c3_analogico(s_uart, buf, 4000, 4095, 10)))
+        if "TALLER-OK c3_analogico" not in buf[0]:
+            buf[0] += leer_uart_hasta(s_uart, ["TALLER-OK c3_analogico", "TALLER-FALLO"], 10)
+        if not buf[0].endswith("\n"):
+            buf[0] += leer_uart_hasta(s_uart, ["\n"], 0.5)  # el salto de la última línea
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_c3_analogico(tramas, buf[0])
+    print("pasos:", pasos)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO c3_analogico\n" + buf[0][-800:] if errores else
+          "OK c3_analogico: GPIO0 0 → 2048 → 4095")
+    return 1 if errores else 0
+
+
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
     if modo == "c3_gpio":
         sys.exit(c3_gpio(qemu, sys.argv[3]))
+    if modo == "c3_pwm":
+        sys.exit(c3_pwm(qemu, sys.argv[3]))
+    if modo == "c3_analogico":
+        sys.exit(c3_analogico(qemu, sys.argv[3]))
     if modo == "humo":
         sys.exit(humo(qemu, sys.argv[3], sys.argv[4]))
     if modo == "entrada":

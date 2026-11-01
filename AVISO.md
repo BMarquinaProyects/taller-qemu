@@ -34,5 +34,10 @@ Cambios de Taller (resumen):
   flash de 4 MiB, modo `c3_gpio`, unitarias del modelo real y despacho de entradas.
   IO_MUX, IRQ GPIO, rutas periféricas y conexión C3 de LEDC/ADC/I2C/RMT/SPI2
   quedan pendientes; los modelos clásicos no se trasladan al C3.
+- LEDC del ESP32-C3 (`hw/misc/esp32c3_ledc.c` y cabecera): cuatro timers y seis
+  canales LS que mandan PWM al GPIO de su señal; ADC1 del C3
+  (`hw/misc/esp32c3_saradc.c` y cabecera) de una lectura con valores inyectados
+  por ANALOGICO. Conectados en `hw/riscv/esp32c3.c`; `esp32c3_gpio.c` resuelve
+  la señal de salida de cada pin. Versión 0.9.0.
 - Puente v7 (`hw/misc/taller_puente.c`): latido TIEMPO cada 10 ms virtuales con un
   temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.1.

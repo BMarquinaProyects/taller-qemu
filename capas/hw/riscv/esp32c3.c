@@ -8,6 +8,7 @@
  * (at your option) any later version.
  */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "hw/qdev-properties.h"
@@ -34,6 +35,8 @@
 #include "hw/char/esp32c3_uart.h"
 #include "hw/gpio/esp32c3_gpio.h"
 #include "hw/misc/taller_puente.h"
+#include "hw/misc/esp32c3_ledc.h"
+#include "hw/misc/esp32c3_saradc.h"
 #include "chardev/char.h"
 #include "hw/nvram/esp32c3_efuse.h"
 #include "hw/riscv/esp32c3_clk.h"
@@ -75,6 +78,8 @@ struct Esp32C3MachineState {
     ESP32C3IntMatrixState intmatrix;
     ESP32C3UARTState uart[ESP32C3_UART_COUNT];
     ESP32C3GPIOState gpio;
+    ESP32C3LEDCState ledc;
+    ESP32C3SarAdcState saradc;
     ESP32C3CacheState cache;
     ESP32C3EfuseState efuse;
     ESP32C3ClockState clock;
@@ -325,16 +330,18 @@ static void esp32c3_load_firmware(MachineState *machine)
 }
 
 
-/* Solo GPIO en esta fase: no reinterpretar ADC/I2C clásicos como C3. */
+/* Receptor propio: GPIO y ADC1 del C3; I2C sigue pendiente. */
 static void esp32c3_taller_recibir(void *opaque, uint8_t tipo,
                                   const uint8_t *datos, size_t largo)
 {
-    ESP32C3GPIOState *gpio = opaque;
+    Esp32C3MachineState *ms = opaque;
 
     if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
-        esp32c3_gpio_fijar_entrada(gpio, datos[0], datos[1] != 0);
+        esp32c3_gpio_fijar_entrada(&ms->gpio, datos[0], datos[1] != 0);
+    } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
+        esp32c3_saradc_fijar_valor(&ms->saradc, datos[0], lduw_le_p(datos + 1));
     } else if (tipo == TALLER_TRAMA_ENTRADA_ARMADA) {
-        esp32c3_gpio_armar_entrada(gpio, datos, largo);
+        esp32c3_gpio_armar_entrada(&ms->gpio, datos, largo);
     }
 }
 
@@ -421,6 +428,8 @@ static void esp32c3_machine_init(MachineState *machine)
 
     object_initialize_child(OBJECT(machine), "intmatrix", &ms->intmatrix, TYPE_ESP32C3_INTMATRIX);
     object_initialize_child(OBJECT(machine), "gpio", &ms->gpio, TYPE_ESP32C3_GPIO);
+    object_initialize_child(OBJECT(machine), "ledc", &ms->ledc, TYPE_ESP32C3_LEDC);
+    object_initialize_child(OBJECT(machine), "saradc", &ms->saradc, TYPE_ESP32C3_SARADC);
     object_initialize_child(OBJECT(machine), "extmem", &ms->cache, TYPE_ESP32C3_CACHE);
     object_initialize_child(OBJECT(machine), "efuse", &ms->efuse, TYPE_ESP32C3_EFUSE);
     object_initialize_child(OBJECT(machine), "clock", &ms->clock, TYPE_ESP32C3_CLOCK);
@@ -507,10 +516,24 @@ static void esp32c3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
     }
 
-    /* Taller: GPIO ya existe antes de habilitar entradas y anunciar HOLA v6. */
+    /* Modelos C3 en sus direcciones propias, antes de recibir por el puente. */
+    {
+        ms->ledc.gpio = &ms->gpio;
+        sysbus_realize(SYS_BUS_DEVICE(&ms->ledc), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->ledc), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_LEDC_BASE, mr, 0);
+
+        sysbus_realize(SYS_BUS_DEVICE(&ms->saradc), &error_fatal);
+        mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->saradc), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_APB_SARADC_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->saradc), 0,
+                          qdev_get_gpio_in(intmatrix_dev, ETS_APB_ADC_INTR_SOURCE));
+    }
+
+    /* Taller: GPIO y ADC1 existen antes de habilitar entradas y anunciar HOLA. */
     Chardev *puente = qemu_chr_find(TALLER_PUENTE_CHARDEV);
     if (puente) {
-        taller_puente_iniciar(puente, esp32c3_taller_recibir, &ms->gpio);
+        taller_puente_iniciar(puente, esp32c3_taller_recibir, ms);
     }
 
     /* (Extmem) Cache realization */
