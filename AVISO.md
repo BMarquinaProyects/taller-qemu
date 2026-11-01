@@ -35,4 +35,4 @@ Cambios de Taller (resumen):
   IO_MUX, IRQ GPIO, rutas periféricas y conexión C3 de LEDC/ADC/I2C/RMT/SPI2
   quedan pendientes; los modelos clásicos no se trasladan al C3.
 - Puente v7 (`hw/misc/taller_puente.c`): latido TIEMPO cada 10 ms virtuales con un
-  temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.0.
+  temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.1.

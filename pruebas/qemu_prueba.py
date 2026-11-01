@@ -271,9 +271,16 @@ def puente(qemu: str, firmware: str) -> int:
     # TIEMPO (v7): latidos sin carga cada 10 ms virtuales (con icount, un disparo puede llegar
     # unos µs tarde; la cadencia es fija y no acumula el retraso).
     latidos = [t for tp, _, t, c in tramas if tp == TIPO_TIEMPO and not c]
+    # En Windows el anfitrión puede retrasar un disparo: un hueco largo va seguido de uno corto y
+    # la media no cambia. Lo que importa al receptor: el tiempo avanza siempre y con cadencia fija.
     huecos = [b - a for a, b in zip(latidos, latidos[1:])]
-    if len(latidos) < 3 or not all(0.9 * LATIDO_NS <= h <= 1.1 * LATIDO_NS for h in huecos):
-        errores.append(f"latidos TIEMPO: {len(latidos)}, huecos {huecos[:5]}")
+    media = (latidos[-1] - latidos[0]) / len(huecos) if huecos else 0
+    raros = [h for h in huecos if not 0.9 * LATIDO_NS <= h <= 1.1 * LATIDO_NS]
+    if (len(latidos) < 3 or not all(0 < h <= 5 * LATIDO_NS for h in huecos)
+            or not 0.9 * LATIDO_NS <= media <= 1.1 * LATIDO_NS):
+        errores.append(f"latidos TIEMPO: {len(latidos)}, media {media:.0f} ns, fuera de ±10 %: {raros[:5]}")
+    elif raros:
+        print(f"aviso: {len(raros)} latidos fuera de ±10 % (media {media:.0f} ns): {raros[:5]}")
     print(f"tramas: {len(tramas)} (GPIO {len(gpio)}, SPI {sum(1 for t in tramas if t[0] == 3)}, "
           f"TIEMPO {len(latidos)})")
     for e in errores:
