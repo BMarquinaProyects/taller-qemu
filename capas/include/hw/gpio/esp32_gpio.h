@@ -56,6 +56,8 @@ typedef struct Esp32GpioState {
     uint64_t enable;     /* 1 = el pin es salida */
     uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
     uint32_t seleccion_salida[ESP32_GPIO_CANTIDAD_PINES];
+    uint32_t registro_pin[ESP32_GPIO_CANTIDAD_PINES]; /* GPIO_PINn_REG */
+    uint64_t drenador_abierto;                         /* bit n = PAD_DRIVER del pin n */
     TallerArmado armado;
     Esp32GpioTemporizadorArmado trenes[TALLER_ARMADO_RANURAS];
 } Esp32GpioState;

@@ -107,6 +107,15 @@ ni la fuente RC de 8 MHz. Los cambios LS se recalculan también antes de `PARA_U
 sin repetir muestras idénticas. Si una señal aparece en varios GPIO, se usa el primero;
 al cambiar de pin se apaga el anterior.
 
+## GPIO de drenador abierto
+
+`GPIO_PINn_REG` (0x88 + 4·n) se guarda entero y su bit 2 (`PAD_DRIVER`) marca el pin como
+drenador abierto. En un pin de salida así, `GPIO_IN` da el AND cableado de lo que conduce el
+ESP32 y lo que llega de fuera: un 1 suelta la línea y manda el exterior. El módulo `dht` de
+MicroPython deja el pin del DHT22 en drenador abierto y lee así la respuesta del sensor; sin
+esto leía siempre su propio 1. Los trenes armados vigilan `enable ? out : 1`, que en drenador
+abierto sigue siendo correcto (un 1 es una línea suelta).
+
 ## Prueba PWM
 
 `pruebas/pwm_prueba/pwm_prueba.ino` usa Arduino ESP32 core 3.x. Su imagen completa

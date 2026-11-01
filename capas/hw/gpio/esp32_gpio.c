@@ -100,10 +100,24 @@ static uint64_t con_alta(uint64_t v, uint32_t alta) {
     return (v & 0xFFFFFFFFull) | ((uint64_t)(alta & ESP32_GPIO_MASCARA_ALTA) << 32);
 }
 
-/* Lo que ve el firmware al leer IN: su propio nivel en las salidas, el externo en las entradas. */
+/*
+ * Lo que ve el firmware al leer IN: su propio nivel en las salidas push-pull, el externo en las
+ * entradas y, en las salidas de drenador abierto (PAD_DRIVER), el AND cableado de las dos: un 1
+ * suelta la línea y manda lo de fuera (el DHT22 de MicroPython la usa así, E-037).
+ */
 static uint64_t esp32_gpio_entrada(Esp32GpioState *s)
 {
-    return (s->out & s->enable) | (s->in_externo & ~s->enable);
+    uint64_t od = s->enable & s->drenador_abierto;
+    return (s->out & s->enable & ~od) | (s->out & s->in_externo & od) | (s->in_externo & ~s->enable);
+}
+
+/* GPIO_PINn_REG (0x88 + 4n): se guarda entero; el bit 2 (PAD_DRIVER) es el drenador abierto. */
+#define A_GPIO_PIN0 0x0088
+#define ESP32_GPIO_PAD_DRIVER (1u << 2)
+
+static bool es_registro_pin(hwaddr addr)
+{
+    return addr >= A_GPIO_PIN0 && addr < A_GPIO_PIN0 + 4 * ESP32_GPIO_CANTIDAD_PINES && !(addr & 3);
 }
 
 static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
@@ -114,6 +128,9 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
         addr < A_GPIO_FUNC0_OUT_SEL_CFG + 4 * ESP32_GPIO_CANTIDAD_PINES &&
         !(addr & 3)) {
         return s->seleccion_salida[(addr - A_GPIO_FUNC0_OUT_SEL_CFG) / 4];
+    }
+    if (es_registro_pin(addr)) {
+        return s->registro_pin[(addr - A_GPIO_PIN0) / 4];
     }
     switch (addr) {
     case A_GPIO_STRAP:
@@ -154,6 +171,16 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
         }
         return;
     }
+    if (es_registro_pin(addr)) {
+        int pin = (int)((addr - A_GPIO_PIN0) / 4);
+        s->registro_pin[pin] = v;
+        if (v & ESP32_GPIO_PAD_DRIVER) {
+            s->drenador_abierto |= 1ull << pin;
+        } else {
+            s->drenador_abierto &= ~(1ull << pin);
+        }
+        return;
+    }
     switch (addr) {
     case A_GPIO_OUT:          s->out = con_baja(s->out, v); break;
     case A_GPIO_OUT_W1TS:     s->out |= v; break;
@@ -190,6 +217,8 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
     memcpy(anteriores, s->seleccion_salida, sizeof(anteriores));
     s->out = 0;
     s->enable = 0;
+    s->drenador_abierto = 0;
+    memset(s->registro_pin, 0, sizeof(s->registro_pin));
     s->in_externo = ~0ull;
     /* Reset del chip: conservar sensores armados, cancelar trenes en curso. */
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
