@@ -42,7 +42,17 @@ static void esp32_rmt_programar(Esp32RmtCanal *c)
     }
     /* Plazos absolutos. APB puede tener ticks de 12,5 ns: redondear una sola
      * vez el acumulado, evitando añadir medio ns por pulso. */
-    timer_mod_ns(c->timer, c->inicio_ns + (tx->tiempo_ps + 999) / 1000);
+    timer_mod_ns(c->timer, c->inicio_ns + c->desfase_ns + (tx->tiempo_ps + 999) / 1000);
+}
+
+/* La ISR limpió tx_thr_event (o desactivó esa IRQ): seguir donde se quedó. */
+static void esp32_rmt_reanudar(Esp32RmtCanal *c)
+{
+    c->esperando_isr = false;
+    c->desfase_ns += qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - c->pausa_desde_ns;
+    if (c->rmt->logica.tx[c->numero].activo) {
+        esp32_rmt_programar(c);
+    }
 }
 
 static void esp32_rmt_timer(void *opaque)
@@ -59,11 +69,27 @@ static void esp32_rmt_timer(void *opaque)
         g_array_set_size(c->simbolos, 0);
         if (evento & TALLER_RMT_VUELTA) {
             /* Una vuelta es un tren completo; continuar sin tx_end. */
-            c->inicio_ns += (tx->tiempo_ps + 999) / 1000;
+            c->inicio_ns += c->desfase_ns + (tx->tiempo_ps + 999) / 1000;
+            c->desfase_ns = 0;
             tx->tiempo_ps = 0;
         }
     }
     esp32_rmt_irq(s);
+    /*
+     * Contrapresión en el ping-pong. En el chip, la ISR del umbral entra en pocos µs y le
+     * sobran los 40 µs que dura la otra mitad del bloque. En QEMU, si el firmware espera
+     * en `waiti` (FreeRTOS bloqueado en rmtWrite), `-icount sleep=on` deja correr el reloj
+     * virtual con el real y la ISR puede llegar tarde: el modelo leería la mitad sin
+     * rellenar (colores al azar, distintos en cada ejecución). Así que, con la IRQ de
+     * umbral activada, el canal se para hasta que la ISR la limpie en INT_CLR. Los
+     * símbolos no cambian; solo se alarga un poco la duración virtual del tren.
+     */
+    if (tx->activo && (evento & TALLER_RMT_UMBRAL) &&
+        (s->logica.registros[0xa8 / 4] & (1u << (24 + c->numero)))) {
+        c->esperando_isr = true;
+        c->pausa_desde_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        return;
+    }
     if (tx->activo) {
         esp32_rmt_programar(c);
     }
@@ -94,8 +120,22 @@ static void esp32_rmt_write(void *opaque, hwaddr direccion, uint64_t valor,
             timer_del(c->timer);
             g_array_set_size(c->simbolos, 0);
             c->inicio_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            c->desfase_ns = 0;
+            c->esperando_isr = false;
             c->gpio = gpio < 0 ? 255 : gpio;
             esp32_rmt_programar(c);
+        }
+    }
+    /* Reanudar los canales parados en el umbral: la ISR lo limpió o desactivó esa IRQ. */
+    if (direccion == 0xac || direccion == 0xa8) {
+        for (unsigned n = 0; n < TALLER_RMT_CANALES; n++) {
+            Esp32RmtCanal *c = &s->canal[n];
+            uint32_t bit = 1u << (24 + n);
+            bool limpiado = direccion == 0xac && (valor & bit);
+            bool desactivado = direccion == 0xa8 && !(valor & bit);
+            if (c->esperando_isr && (limpiado || desactivado)) {
+                esp32_rmt_reanudar(c);
+            }
         }
     }
     esp32_rmt_irq(s);
@@ -117,6 +157,8 @@ static void esp32_rmt_reset(Object *obj, ResetType tipo)
     for (unsigned n = 0; n < TALLER_RMT_CANALES; n++) {
         timer_del(s->canal[n].timer);
         g_array_set_size(s->canal[n].simbolos, 0);
+        s->canal[n].esperando_isr = false;
+        s->canal[n].desfase_ns = 0;
     }
     taller_rmt_iniciar(&s->logica);
     esp32_rmt_irq(s);

@@ -260,6 +260,14 @@ solo decide quién escribe la RAM al recibir. Para diagnosticar el driver,
 `TALLER_RMT_TRAZA=1` vuelca a la salida de error cada acceso a los registros del
 RMT (no a su RAM) y cada cambio de la IRQ.
 
+**Contrapresión en el umbral (v0.6.1).** Con la IRQ `tx_thr_event` activada, el canal
+se para al marcarla y sigue cuando la ISR la limpia en `INT_CLR` (o la desactiva en
+`INT_ENA`). En el chip, la ISR entra en pocos µs y le sobran los 40 µs de la otra
+mitad. Pero en QEMU, con el firmware en `waiti` y `-icount sleep=on`, el reloj virtual
+corre con el real, y la ISR podía llegar tarde: el modelo leía la mitad sin rellenar,
+con colores distintos en cada ejecución. Los símbolos no cambian; el tren dura unos
+µs más (8 LED: 282-290 µs, hasta ~330 µs con el equipo cargado).
+
 La trama RMT llega **al terminar**, con `t_ns` del **inicio** del tren y el primer
 GPIO conectado a `RMT_SIG_OUT0_IDX + canal` (87 + canal), capturado al iniciar;
 si no hay ninguno, 255. SPI pendiente se vacía antes. Por ello, el `t_ns` de RMT

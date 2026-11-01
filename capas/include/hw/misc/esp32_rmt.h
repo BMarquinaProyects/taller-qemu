@@ -16,6 +16,10 @@ typedef struct Esp32RmtCanal {
     GArray *simbolos;
     int64_t inicio_ns;
     uint8_t gpio;
+    /* Contrapresión (ver esp32_rmt_timer): parado tras tx_thr_event hasta que la ISR lo limpie. */
+    bool esperando_isr;
+    int64_t pausa_desde_ns;
+    int64_t desfase_ns; /* tiempo virtual total en pausa durante este tren */
 } Esp32RmtCanal;
 
 struct Esp32RmtState {
