@@ -27,17 +27,32 @@ Cambios de Taller (resumen):
   `0x554 + 4·n` y trenes armados reutilizados (`hw/gpio/esp32c3_gpio.c` y cabecera).
 - Máquina C3 conectada al chardev `taller-puente` (`hw/riscv/esp32c3.c`).
   El parser común entrega cargas a un receptor por máquina; el clásico conserva
-  GPIO/ADC1/I2C y el C3 recibe GPIO y armados. No se modifica la matriz IRQ C3:
+  GPIO/ADC1/I2C y el C3 recibe GPIO, armados, ADC1 e I2C0. No se modifica la matriz IRQ C3:
   el modelo base ya conserva niveles, aplica OR y recalcula al reasignar.
 - Compilación y empaquetado de Xtensa y RISC-V32 mediante `construir.sh`, con
   reglas Meson para el GPIO y el puente C3. Prueba Arduino e imagen completa de
   flash de 4 MiB, modo `c3_gpio`, unitarias del modelo real y despacho de entradas.
-  IO_MUX, IRQ GPIO, rutas periféricas y conexión C3 de LEDC/ADC/I2C/RMT/SPI2
-  quedan pendientes; los modelos clásicos no se trasladan al C3.
+  IO_MUX, IRQ GPIO, RMT RX y SPI2 de usuario quedan pendientes;
+  los controladores clásicos no se trasladan al C3.
 - LEDC del ESP32-C3 (`hw/misc/esp32c3_ledc.c` y cabecera): cuatro timers y seis
   canales LS que mandan PWM al GPIO de su señal; ADC1 del C3
   (`hw/misc/esp32c3_saradc.c` y cabecera) de una lectura con valores inyectados
   por ANALOGICO. Conectados en `hw/riscv/esp32c3.c`; `esp32c3_gpio.c` resuelve
-  la señal de salida de cada pin. Versión 0.9.0.
+  la señal de salida de cada pin. Versión 0.9.0. I2C0 y RMT TX del C3 en la 0.10.0.
+- I2C0 del ESP32-C3 (`hw/i2c/esp32c3_i2c.c` y cabecera): comandos, FIFO APB,
+  actualización y reset FSM propios del C3; END, RSTART, NACK e IRQ. Reutiliza
+  el esclavo `taller_i2c` del clásico en bus 0, con altas/registros desde el
+  receptor C3 y escrituras completas hacia el puente. Kconfig selecciona I2C
+  para el C3 y Meson incorpora controlador y espejo.
+- RMT TX del ESP32-C3 (`hw/misc/esp32c3_rmt.c` y cabecera): dos TX con bloques
+  de 48 palabras, lectura diferida de RAM, actualización, umbral ping-pong
+  con contrapresión, fin e IRQ. Resuelve señales 51/52 mediante GPIO y emite
+  los símbolos crudos con su tick y marca de inicio por el mismo puente RMT.
+  Sin RX, DMA, portadora ni modo continuo.
+- Pruebas Arduino C3 I2C/RMT, imágenes fusionadas de 4 MiB, verificadores
+  puros y lanzadores por sockets; modelos reales aislados con adaptadores
+  mínimos, también compilables con MSVC. `todas.sh` añade ambos modos C3.
+  Este paso mantiene versión 0.9.0 y protocolo v7; compilación completa de
+  QEMU y ejecución integrada quedan para la revisión en WSL.
 - Puente v7 (`hw/misc/taller_puente.c`): latido TIEMPO cada 10 ms virtuales con un
   temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.1.

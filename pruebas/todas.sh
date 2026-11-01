@@ -24,4 +24,6 @@ fi
 python3 pruebas/qemu_prueba.py "$Q_C3" c3_gpio pruebas/c3_gpio_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q_C3" c3_pwm pruebas/c3_pwm_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q_C3" c3_analogico pruebas/c3_analogico_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q_C3" c3_i2c pruebas/c3_i2c_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q_C3" c3_rmt pruebas/c3_rmt_prueba.flash.bin || r=1
 exit $r

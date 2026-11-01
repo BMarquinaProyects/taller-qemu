@@ -1,6 +1,6 @@
 # taller-qemu
 
-QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) y ESP32-C3 con GPIO conectado al puente, que usa
+QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) y ESP32-C3 con GPIO, LEDC, ADC1, I2C0 y RMT TX conectados al puente, que usa
 **Taller**, un simulador de placas y componentes. Ver `AVISO.md` para el origen y los cambios.
 
 ## Compilar
@@ -20,12 +20,14 @@ Ver `.github/workflows/qemu.yml`.
 (también en Windows). Si el directorio de trabajo tenía solo Xtensa, se vuelve a
 configurar para añadir RISC-V32; esa primera compilación necesita generar sus objetos.
 
-## ESP32-C3: GPIO, LEDC, ADC1 y puente (fase 6d)
+## ESP32-C3: GPIO, LEDC, ADC1, I2C0, RMT TX y puente (fase 6d)
 
 Usar **qemu-system-riscv32 -machine esp32c3**. El mismo chardev
-`taller-puente` activa HOLA y las tramas GPIO, PWM y TIEMPO del protocolo **v7**. Bit n significa GPIO n también en el C3. ENTRADA,
-ENTRADA_ARMADA y ANALOGICO llegan a los modelos de la máquina seleccionada mediante
-un receptor propio; las rutas GPIO, ADC1 e I2C del ESP32 clásico se conservan.
+`taller-puente` activa HOLA y las tramas GPIO, PWM, I2C_ESCRITURA, RMT y TIEMPO
+del protocolo **v7**. Bit n significa GPIO n también en el C3. ENTRADA,
+ENTRADA_ARMADA, ANALOGICO, I2C_DISPOSITIVO e I2C_REGISTROS llegan a los modelos
+de la máquina seleccionada mediante un receptor propio; las rutas del ESP32
+clásico se conservan. El C3 admite solamente el bus I2C **0**.
 
 El modelo C3 tiene **22 GPIO (0..21)**. OUT (`0x04`), ENABLE (`0x20`),
 IN (`0x3c`) y sus W1TS/W1TC usan solamente esos 22 bits. `GPIO_PINn_REG`
@@ -46,18 +48,20 @@ Inventario de la máquina base `esp-develop-9.2.2-20260417` y trabajo pendiente:
 | Pieza | Estado en C3 |
 |---|---|
 | GPIO | Salida, entrada externa, drenador abierto y trenes conectados al puente. Sin IRQ GPIO ni filtros. |
-| IO_MUX / matriz GPIO | IO_MUX no está emulado: lecturas cero y escrituras ignoradas. PINn y selección de salida conservan valores; sin rutas periféricas ni inversión. La entrada externa empieza alta, como en el clásico; INPUT_PULLUP funciona con ese reposo, sin simular resistencias ni INPUT_PULLDOWN. |
+| IO_MUX / matriz GPIO | IO_MUX no está emulado: lecturas cero y escrituras ignoradas. PINn y selección de salida conservan valores; LEDC y RMT resuelven el GPIO de su señal de salida, sin inversión. La entrada externa empieza alta, como en el clásico; INPUT_PULLUP funciona con ese reposo, sin simular resistencias ni INPUT_PULLDOWN. |
 | Matriz IRQ | El original ya guarda `irq_levels`, aplica OR por línea y recalcula líneas vieja/nueva al reasignar. Conserva prioridad, umbral y habilitación; no tiene el fallo corregido del clásico. La selección de IRQ por flanco no está emulada. No se sustituye este archivo. |
 | UART y temporizadores | Dos UART con FIFO/timeout/IRQ; dos TIMG con T0 y watchdog; SYSTIMER con dos contadores y tres alarmas. Se conservan los modelos de Espressif. |
 | LEDC | `hw/misc/esp32c3_ledc.c`: cuatro timers y seis canales LS (registros de `soc/ledc_reg.h` del C3). Frecuencia = reloj (APB 80 MHz, RC_FAST 17,5 MHz o XTAL 40 MHz según `LEDC_CONF`) / (CLK_DIV en punto fijo 10.8 × 2^resolución); ciclo = DUTY (4 bits de fracción) / 2^resolución. Cada cambio efectivo manda PWM (tipo 4) al GPIO cuya `FUNCn_OUT_SEL_CFG` tiene la señal 45 + canal; cambiar de pin apaga el anterior. Sin fades, IRQ ni pulsos GPIO. |
 | ADC | `hw/misc/esp32c3_saradc.c`: ADC1 de una lectura (`ONETIME_SAMPLE`, `SAR1DATA_STATUS`, `ADC1_DONE` en INT_RAW/ST/CLR y su IRQ). ANALOGICO con GPIO 0..4 fija el valor crudo de 12 bits del canal 0..4; otros GPIO se ignoran. Sin ADC2, DMA ni calibración: `analogRead` devuelve el valor inyectado. |
-| I2C | Pendiente: un controlador externo; reutilización del espejo del puente tras adaptar registros/IRQ y conectar bus 0. |
-| RMT | Pendiente: dos canales TX y dos RX, 48 palabras por canal; necesita adaptar registros/RAM/IRQ y señales de salida 51/52. |
+| I2C | `hw/i2c/esp32c3_i2c.c`: I2C0 en `0x60013000`, FIFO APB de 32 bytes por DATA, ocho comandos C3 (WRITE=1, STOP=2, READ=3, END=4, RSTART=6), `conf_upgate`, `fsm_rst`, NACK e IRQ COMPLETE/END/FIFO. END conserva la transferencia; RSTART vuelve a seleccionar el esclavo. El mismo `taller_i2c` del clásico ofrece el espejo del puente en bus 0 y emite cada escritura al STOP/RSTART. Sin modo esclavo, DMA, temporización eléctrica ni I2C por software. |
+| RMT | `hw/misc/esp32c3_rmt.c`: dos TX en `0x60016000`, RAM desde `+0x400`, 48 palabras por bloque TX (canal 0 puede tomar ambos). `conf_update`, inicio, fin, umbral e IRQ; recarga ping-pong con contrapresión como en el clásico. Cada tren emite RMT (tipo 7) con su inicio, símbolos crudos y GPIO de las señales 51/52. Tick = (1 + DIV_NUM + DIV_A/DIV_B) × divisor del canal / reloj, usando APB 80 MHz, RC_FAST 17,5 MHz o XTAL 40 MHz; divisor de canal 0 significa 256. Sin RX, DMA, portadora ni modo continuo. |
 | SPI | SPI1 emula la flash; no hay SPI2 de usuario conectado al puente. GDMA ya existe en la base, pero no equivale al DMA SPI del clásico: SPI2/GDMA y sus rutas quedan pendientes. |
 
-Las capacidades pendientes se contrastaron con `soc_caps.h`, `adc_channel.h`
-y `gpio_sig_map.h` del mismo core. Las tramas I2C todavía se ignoran en la
-máquina C3.
+Las capacidades y señales se contrastaron con `soc_caps.h`, `adc_channel.h`
+y `gpio_sig_map.h` del mismo core. Los registros I2C y RMT se contrastaron
+con `soc/{i2c,rmt}_{reg,struct}.h` y `hal/{i2c,rmt}_ll.h` del C3, además
+del [driver `i2c_master` de IDF 5.5](https://github.com/espressif/esp-idf/blob/v5.5/components/esp_driver_i2c/i2c_master.c). El bus del puente no necesita conocer
+los GPIO SDA/SCL: el controlador resuelve directamente la dirección I2C.
 
 ### Pruebas C3
 
@@ -68,9 +72,24 @@ máquina C3.
 - `c3_analogico` (`pruebas/c3_analogico_prueba/`): `analogRead(0)` cada 20 ms;
   el verificador inyecta ANALOGICO(0, 2048) y ANALOGICO(0, 4095) y exige las
   lecturas 0 → 1900..2200 → 4000..4095 y `TALLER-OK c3_analogico`.
-- Las unitarias `c3_pwm_unitarias.py` y `c3_analogico_unitarias.py` prueban los
-  verificadores y compilan los modelos reales con adaptadores mínimos (necesitan
-  un compilador C: en Windows se saltan).
+- `c3_i2c` (`pruebas/c3_i2c_prueba/`): Wire hardware, SDA4/SCL5 a 100 kHz.
+  El lanzador registra 0x3C en bus 0 e inyecta 0xAB en el registro 0xD0;
+  exige lectura con RSTART, escritura `00 AF`, ACK=0, NACK=2 en 0x3D
+  ausente y la línea única `TALLER-OK c3_i2c`. También comprueba las dos
+  escrituras del puente, `D0` y `00 AF`, en ese orden; los sondeos no emiten.
+- `c3_rmt` (`pruebas/c3_rmt_prueba/`): `rmtWrite` de Arduino, GPIO8, 10 MHz,
+  un bloque de 48 palabras. Envía 8 LED RGB=(17,34,51) y 30 LED
+  RGB=(68,85,102), ambos en GRB con bits MSB primero. Los dos trenes
+  fuerzan recarga por IRQ; el verificador exige colores y símbolos exactos,
+  tick de 100 ns, fin cero, 193/721 símbolos y `TALLER-OK c3_rmt`.
+- Las unitarias `c3_*_unitarias.py` prueban los verificadores y los lanzadores
+  sin QEMU; `c3_i2c_modelo_unitarias.py` y `c3_rmt_modelo_unitarias.py`
+  compilan los modelos reales mediante `c3_modelos.py`. I2C cubre NACK,
+  RSTART, comandos mayores que FIFO, lotes END de 70 bytes, IRQ y reset;
+  RMT cubre dos TX, relojes/divisores, recarga antes y después de limpiar
+  el umbral, lectura diferida, parada y reset. El adaptador admite GCC/Clang
+  o MSVC (`cl` desde una consola de desarrollo); sin compilador se omiten
+  las pruebas C. LEDC y ADC1 reutilizan el mismo adaptador.
 
 Las imágenes se compilan como la de GPIO (abajo), cambiando el nombre del sketch.
 
@@ -98,6 +117,15 @@ Copy-Item pruebas/c3_gpio_prueba/build/c3_gpio_prueba.ino.merged.bin pruebas/c3_
 
 SHA-256 de la imagen incluida:
 `71a31f166b7f8aff0027f8cf6080a7c72bae5ad6181bd21103ddca4df75150b2`.
+
+Las nuevas imágenes fusionadas, también de **4 MiB**, se compilaron con
+la misma CLI, core y FQBN:
+
+| Imagen | SHA-256 |
+|---|---|
+| `c3_i2c_prueba.flash.bin` | `9770b2a1d1cc3c6c1e09771065b9fafde067160cab69d406360a4161426ea557` |
+| `c3_rmt_prueba.flash.bin` | `249ca0475eb198017d8f8f6541b2d33dc334cd3c804431c6ec46dcf4553c9bfd` |
+
 El lanzador usa una copia temporal de la flash. No carga la eFuse ECO3 del
 clásico: el modelo C3 crea su eFuse en RAM con revisión **v0.3** y versión
 de bloque **1.3** si no recibe fichero. Desactiva los watchdog de TIMG con
@@ -107,19 +135,27 @@ La instalación debe incluir `share/esp32c3-rom.bin` junto al resto de ROM de QE
 ```sh
 python3 -m unittest discover -s pruebas -p '*_unitarias.py'
 python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_gpio pruebas/c3_gpio_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_i2c pruebas/c3_i2c_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_rmt pruebas/c3_rmt_prueba.flash.bin
 bash pruebas/todas.sh /ruta/qemu-system-xtensa /ruta/qemu-system-riscv32
 ```
 
-`todas.sh` mantiene las once llamadas previas y añade C3 como duodécima.
+`todas.sh` conserva las once llamadas clásicas y ejecuta los cinco modos C3:
+`c3_gpio`, `c3_pwm`, `c3_analogico`, `c3_i2c` y `c3_rmt`.
 Sin segundo argumento, busca `qemu-system-riscv32` junto al Xtensa; también
 admite `QEMU_C3=/ruta/binario`. La omisión opcional de MicroPython sigue igual.
 Las unitarias ejecutan el GPIO C3 real aislado, sus trenes/reset, el parser y
 los receptores reales de ambas máquinas, además de comprobar el verificador.
-Se compiló Arduino y se comprobaron las cuatro unidades modificadas con
-cabeceras reales de QEMU. **Pendientes enlace y ejecución real de C3 y de
-las once pruebas previas con los binarios recompilados**: aquí no se compiló
-QEMU entero ni había un ejecutable RISC-V32 instalado. Las pruebas aisladas
-no certifican arranque, registro QOM ni comportamiento temporal integrado.
+En este paso se compilaron los dos sketches y se ejecutaron **73 unitarias**:
+sin fallos, ocho omitidas por requerir GCC/Clang. Los cuatro modelos C3
+(LEDC, ADC1, I2C y RMT) se compilaron y ejecutaron aislados con MSVC C11;
+también se compilaron y ejecutaron el GPIO y el parser/receptores reales,
+incluido el despacho I2C del C3. `bash -n pruebas/todas.sh` pasó. WSL devolvió
+`E_ACCESSDENIED` al intentar ejecutar las pruebas; se usó el compilador nativo.
+**Pendientes compilación/enlace de QEMU y ejecución de `todas.sh` en WSL con
+los binarios recompilados.** Las pruebas aisladas no certifican arranque,
+registro QOM ni comportamiento temporal integrado; tampoco se ejecutó aquí
+MicroPython. `VERSION` sigue en 0.9.0 y el protocolo sigue en v7.
 
 ## Protocolo del puente (v7)
 
@@ -185,7 +221,7 @@ los trenes en curso, se conservan los armados y se reinicia la antigüedad de lo
 niveles altos en ese instante, sin generar DISPARO. SPI pendiente se vacía antes
 de DISPARO. El `t_ns` de ENTRADA_ARMADA se ignora, como en las demás entradas.
 
-I2C usa buses 0 y 1, con hasta ocho direcciones activas de 7 bits por bus
+I2C usa buses 0 y 1 en el clásico y solo bus 0 en el C3, con hasta ocho direcciones activas de 7 bits por bus
 (1..127; no se admite general call). Sin alta, la dirección responde NACK.
 Cada alta nueva crea un espejo de 256 bytes a cero y puntero a cero; repetir el alta
 conserva el estado, y la baja lo borra. Una novena alta y buses/direcciones no válidos

@@ -13,6 +13,8 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_gpio <c3_gpio_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_pwm <c3_pwm_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_analogico <c3_analogico_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_i2c <c3_i2c_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_rmt <c3_rmt_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -1057,6 +1059,177 @@ def c3_analogico(qemu: str, firmware: str) -> int:
     return 1 if errores else 0
 
 
+def comprobar_tramas_c3(tramas: list, tipo_datos: int) -> list[str]:
+    """Valida el sobre v7, los latidos y los GPIO auxiliares de las pruebas C3."""
+    errores = []
+    if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
+        errores.append(f"sin HOLA v{VERSION_PUENTE}")
+    for indice, (tipo, version, _, carga) in enumerate(tramas):
+        if version != VERSION_PUENTE or tipo not in (1, 2, TIPO_TIEMPO, tipo_datos):
+            errores.append(f"trama C3 inválida: tipo {tipo}, versión {version}")
+        if tipo == 1 and (indice != 0 or not es_hola(tramas[indice], VERSION_PUENTE)):
+            errores.append("HOLA repetido o inválido")
+        if tipo == TIPO_TIEMPO and carga:
+            errores.append("TIEMPO debe tener carga vacía")
+        if tipo == 2:
+            if len(carga) != 16:
+                errores.append("trama GPIO con longitud distinta de 16")
+            elif any(mascara >> 22 for mascara in struct.unpack("<QQ", carga)):
+                errores.append("GPIO C3 fuera de 0..21")
+    # RMT se emite al terminar, pero lleva el instante de inicio del tren. Puede
+    # aparecer después de un latido más reciente; sus tiempos se validan aparte.
+    tiempos = [t for tipo, _, t, _ in tramas if tipo_datos != 7 or tipo != 7]
+    if tiempos != sorted(tiempos):
+        errores.append("t_ns decreciente")
+    return errores
+
+
+def comprobar_c3_i2c(tramas: list, texto: str) -> list[str]:
+    """Espejo 0x3C:D0=AB, escritura 00 AF con ACK y dispositivo ausente con NACK."""
+    errores = comprobar_tramas_c3(tramas, 5)
+    esperadas = ["C3-I2C-ID=AB", "C3-I2C-ACK=0", "C3-I2C-NACK=2", "TALLER-OK c3_i2c"]
+    observadas = [linea for linea in texto.splitlines()
+                  if "C3-I2C-" in linea or "TALLER-OK c3_i2c" in linea]
+    if (observadas != esperadas or any(not linea_unica(texto, linea) for linea in esperadas)
+            or "TALLER-FALLO" in texto):
+        errores.append(f"UART I2C incompleta, duplicada o fuera de orden: {observadas}")
+    escrituras = []
+    for tipo, _, _, carga in tramas:
+        if tipo != 5:
+            continue
+        if len(carga) < 3 or carga[0] != 0 or carga[1] != 0x3c:
+            errores.append("I2C_ESCRITURA inválida o fuera de bus 0, dirección 0x3C")
+        escrituras.append(carga)
+    if escrituras != [b"\x00\x3c\xd0", b"\x00\x3c\x00\xaf"]:
+        errores.append(f"escrituras I2C distintas de D0 y 00 AF: {[c.hex() for c in escrituras]}")
+    return errores
+
+
+def c3_i2c(qemu: str, firmware: str) -> int:
+    """Configura el espejo antes de que el sketch C3 lea el identificador."""
+    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        fin = time.monotonic() + 15
+        while not tramas and time.monotonic() < fin and proc.poll() is None:
+            time.sleep(0.01)
+        if tramas and es_hola(tramas[0], VERSION_PUENTE):
+            s_puente.sendall(trama_i2c_dispositivo(0, 0x3c, True) +
+                             trama_i2c_registros(0, 0x3c, 0xd0, b"\xab"))
+            texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_i2c", "TALLER-FALLO"], 60)
+            if not texto.endswith("\n"):
+                texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
+            time.sleep(0.5)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_c3_i2c(tramas, texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO c3_i2c\n" + texto[-1000:] if errores else
+          "OK c3_i2c: espejo 0x3C:D0=AB; escritura 00 AF con ACK; ausente con NACK")
+    return 1 if errores else 0
+
+
+def comprobar_c3_rmt(tramas: list, texto: str) -> list[str]:
+    """Dos trenes WS2812 completos en GPIO8: ocho LED y treinta mediante ping-pong."""
+    errores = comprobar_tramas_c3(tramas, 7)
+    marcas = [linea for linea in texto.splitlines() if "TALLER-OK c3_rmt" in linea]
+    if (marcas != ["TALLER-OK c3_rmt"] or not linea_unica(texto, "TALLER-OK c3_rmt")
+            or "TALLER-FALLO" in texto):
+        errores.append("sin línea única TALLER-OK c3_rmt o fallo del firmware")
+    trenes = []
+    anterior = None
+    for tipo, _, t_ns, carga in tramas:
+        if tipo != 7:
+            continue
+        if len(carga) < 10 or len(carga) > 65535 or (len(carga) - 6) % 4:
+            errores.append("trama RMT con longitud inválida")
+            anterior = None
+            continue
+        canal, gpio, tick_ps = struct.unpack_from("<BBI", carga)
+        if canal not in (0, 1) or gpio != 8 or tick_ps != 100000:
+            errores.append(f"RMT C3: canal={canal}, gpio={gpio}, tick_ps={tick_ps}")
+        clave = (t_ns, canal, gpio, tick_ps)
+        simbolos = list(struct.unpack_from(f"<{(len(carga) - 6) // 4}I", carga, 6))
+        # El emisor del puente conserva el inicio de TX al trocear un tren largo.
+        if clave == anterior:
+            trenes[-1][1].extend(simbolos)
+        else:
+            trenes.append((clave, simbolos))
+        anterior = clave
+    if len(trenes) != 2:
+        errores.append(f"se esperaban dos transmisiones RMT, recibidas {len(trenes)}")
+    esperados = [[(17, 34, 51)] * 8, [(68, 85, 102)] * 30]
+    fin_anterior = 0
+    for indice, (clave, simbolos) in enumerate(trenes):
+        if clave[0] < fin_anterior:
+            errores.append("tiempos RMT decrecientes o transmisiones solapadas")
+        # Cada bit exige alto/bajo de 4/8 u 8/4 ticks; EOF es un único símbolo cero.
+        if (not simbolos or simbolos[-1] != 0 or
+                any(s not in (0x00088004, 0x00048008) for s in simbolos[:-1])):
+            errores.append(f"símbolos WS2812 o fin RMT inválidos en tren {indice}")
+        fin_anterior = clave[0] + max(0, len(simbolos) - 1) * 1200
+        try:
+            colores = decodificar_rmt(simbolos, clave[3])
+            if indice >= len(esperados) or colores != esperados[indice]:
+                errores.append(f"colores o longitud RMT incorrectos en tren {indice}: {colores}")
+        except ValueError as error:
+            errores.append(str(error))
+    return errores
+
+
+def c3_rmt(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_rmt", "TALLER-FALLO"], 60)
+        if not texto.endswith("\n"):
+            texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
+        time.sleep(0.5)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_c3_rmt(tramas, texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO c3_rmt\n" + texto[-1000:] if errores else
+          "OK c3_rmt: GPIO8, 8 y 30 LED GRB completos, 100 ns por tick y fin explícito")
+    return 1 if errores else 0
+
+
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
     if modo == "c3_gpio":
@@ -1065,6 +1238,10 @@ if __name__ == "__main__":
         sys.exit(c3_pwm(qemu, sys.argv[3]))
     if modo == "c3_analogico":
         sys.exit(c3_analogico(qemu, sys.argv[3]))
+    if modo == "c3_i2c":
+        sys.exit(c3_i2c(qemu, sys.argv[3]))
+    if modo == "c3_rmt":
+        sys.exit(c3_rmt(qemu, sys.argv[3]))
     if modo == "humo":
         sys.exit(humo(qemu, sys.argv[3], sys.argv[4]))
     if modo == "entrada":

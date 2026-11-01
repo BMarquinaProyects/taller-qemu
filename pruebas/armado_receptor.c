@@ -13,6 +13,7 @@ enum {
 };
 static TallerArmado armado;
 static unsigned entradas, analogicos, altas, registros;
+static uint8_t bus_esperado = 1;
 static uint8_t ultimo_pin;
 static bool ultimo_nivel;
 static uint16_t lduw_le_p(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
@@ -29,13 +30,13 @@ static void esp32_sens_fijar_valor(int c, uint16_t v)
 }
 static void taller_i2c_dispositivo(uint8_t b, uint8_t d, bool a)
 {
-    assert(b == 1 && d == 0x3c && a);
+    assert(b == bus_esperado && d == 0x3c && a);
     altas++;
 }
 static void taller_i2c_registros(uint8_t b, uint8_t d, uint8_t r,
                                 const uint8_t *datos, size_t n)
 {
-    assert(b == 1 && d == 0x3c && r == 0xd0 && n == 2);
+    assert(b == bus_esperado && d == 0x3c && r == 0xd0 && n == 2);
     assert(datos[0] == 0x60 && datos[1] == 0x61);
     registros++;
 }
@@ -115,6 +116,18 @@ int main(void)
     recibir(adc, sizeof(adc), 1);
     recibir(alta, sizeof(alta), 1);
     recibir(espejo, sizeof(espejo), 1);
+    /* El C3 ignora bus 1, pero entrega las altas y registros de su bus 0. */
+    assert(altas == 1 && registros == 1);
+    uint8_t alta_c3[sizeof(alta)], espejo_c3[sizeof(espejo)];
+    memcpy(alta_c3, alta, sizeof(alta));
+    memcpy(espejo_c3, espejo, sizeof(espejo));
+    alta_c3[12] = espejo_c3[12] = bus_esperado = 0;
+    recibir(alta_c3, sizeof(alta_c3), 1);
+    recibir(espejo_c3, sizeof(espejo_c3), 2);
+    assert(altas == 2 && registros == 2);
+    esp32c3_taller_recibir(&c3, TALLER_TRAMA_I2C_DISPOSITIVO, alta_c3 + 12, 2);
+    esp32c3_taller_recibir(&c3, TALLER_TRAMA_I2C_REGISTROS, espejo_c3 + 12, 2);
+    assert(altas == 2 && registros == 2);
     assert(!(c3.gpio.in_externo & (1u << 9)) && (otro_c3.gpio.in_externo & (1u << 9)));
     uint8_t adc_c3[] = {17, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8};
     for (unsigned pin = 0; pin <= 4; pin++) {
@@ -137,7 +150,7 @@ int main(void)
     receptor_opaque = &otro_c3;
     recibir(entrada, sizeof(entrada), 4);
     assert(!(otro_c3.gpio.in_externo & (1u << 9)));
-    assert(entradas == 1 && analogicos == 1 && altas == 1 && registros == 1);
+    assert(entradas == 1 && analogicos == 1 && altas == 2 && registros == 2);
     receptor_entrante = esp32_taller_recibir;
     receptor_opaque = NULL;
     /* n=201 no cabe: descartar sus 1026 bytes, incluso si contienen cabeceras. */

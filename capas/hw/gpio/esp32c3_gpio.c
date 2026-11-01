@@ -10,7 +10,7 @@
  *
  * Taller, fase 6d: el original solo heredaba el GPIO clásico (STRAP).
  * Aquí hay 22 GPIO, OUT/ENABLE/IN, W1TS/W1TC, PAD_DRIVER y trenes armados.
- * PINn y FUNCn_OUT_SEL_CFG conservan lo escrito en sus offsets C3; LEDC usa
+ * PINn y FUNCn_OUT_SEL_CFG conservan lo escrito en sus offsets C3; LEDC y RMT usan
  * la selección de salida. No hay inversión, IRQ GPIO ni filtros.
  * IO_MUX sigue sin modelo en la máquina: lecturas cero/escrituras ignoradas;
  * IN usa el nivel externo, inicialmente alto, como en el clásico. No se
@@ -23,7 +23,7 @@
  *   líneas al reasignar, además de prioridad/umbral/enable. No tiene el fallo
  *   del clásico; no emula selección de IRQ por flanco.
  * - SPI1 sirve la flash; caché, eFuse y GDMA ya existen. LEDC y ADC1 tienen
- *   modelos C3 propios. I2C externo, RMT y SPI2 de usuario siguen pendientes.
+ *   modelos C3 propios, igual que I2C0 y RMT TX. SPI2 de usuario sigue pendiente.
  *   Según soc_caps.h del core 3.3.12: LEDC tiene 4 timers/6 canales LS;
  *   ADC1, GPIO0..4; I2C, un controlador; RMT, 2 TX/2 RX de 48 palabras.
  */
