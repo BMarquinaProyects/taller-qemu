@@ -7,6 +7,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> pwm <pwm_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> analogico <analogico_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> i2c <i2c_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> armado <armado_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -24,6 +25,11 @@ EFUSE_ECO3 = bytearray(124)
 EFUSE_ECO3[13] = 0x80
 EFUSE_ECO3[22] = 0x10
 CABECERA = struct.Struct("<BBHQ")  # tipo, version, longitud_carga, t_ns
+
+
+def es_hola(trama: tuple, minima: int) -> bool:
+    tipo, version, _, carga = trama
+    return tipo == 1 and minima <= version <= 5 and carga == struct.pack("<I", version)
 
 
 def puerto_libre() -> int:
@@ -135,8 +141,7 @@ def puente(qemu: str, firmware: str) -> int:
     errores = []
     if "TALLER-OK puente" not in texto:
         errores.append("sin marca TALLER-OK puente en la UART")
-    if (not tramas or tramas[0][0] != 1 or len(tramas[0][3]) != 4
-            or struct.unpack("<I", tramas[0][3])[0] not in (1, 2, 3, 4)):
+    if not tramas or not es_hola(tramas[0], 1):
         errores.append(f"la primera trama no es HOLA: {tramas[:1]}")
     tiempos = [t for _, _, t, _ in tramas]
     if tiempos != sorted(tiempos):
@@ -186,17 +191,17 @@ def trama_i2c_registros(bus: int, direccion: int, registro: int, datos: bytes) -
 
 
 def comprobar_i2c(tramas: list, texto: str) -> list[str]:
-    """Exige HOLA v4, una sola dirección, lectura del espejo y escritura exacta."""
+    """Exige HOLA v4/v5, una dirección, lectura del espejo y escritura exacta."""
     errores = []
-    if not tramas or tramas[0][:2] != (1, 4) or tramas[0][3] != struct.pack("<I", 4):
-        errores.append(f"la primera trama no es HOLA versión 4: {tramas[:1]}")
+    if not tramas or not es_hola(tramas[0], 4):
+        errores.append(f"la primera trama no es HOLA versión 4/5: {tramas[:1]}")
     encontrados = re.findall(r"^ENCONTRADO[^\r\n]*", texto, re.MULTILINE)
     if encontrados != ["ENCONTRADO 0x3C"]:
         errores.append(f"escaneo I2C incorrecto: {encontrados}")
     for linea in ("LEIDO=60,61", "TALLER-OK i2c"):
         if not re.search(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE):
             errores.append(f"sin línea {linea} en la UART")
-    if not any(tp == 5 and v == 4 and c == b"\x00\x3c\x00\xaf"
+    if not any(tp == 5 and v in (4, 5) and c == b"\x00\x3c\x00\xaf"
                for tp, v, _, c in tramas):
         errores.append("sin I2C_ESCRITURA(0, 0x3C, 00 AF)")
     return errores
@@ -217,7 +222,7 @@ def i2c(qemu: str, firmware: str) -> int:
         fin = time.monotonic() + 15
         while not tramas and time.monotonic() < fin and proc.poll() is None:
             time.sleep(0.01)
-        if tramas and tramas[0][:2] == (1, 4) and tramas[0][3] == struct.pack("<I", 4):
+        if tramas and es_hola(tramas[0], 4):
             s_puente.sendall(trama_i2c_dispositivo(0, 0x3c, True) +
                              trama_i2c_registros(0, 0x3c, 0xd0, b"\x60\x61"))
             texto = leer_uart_hasta(s_uart, ["TALLER-OK i2c", "TALLER-FALLO"], 60)
@@ -279,7 +284,7 @@ def esperar_en_uart(sock: socket.socket, buf: list, texto: str, timeout_s: float
 
 
 def entrada(qemu: str, firmware: str) -> int:
-    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (v2/v3/v4)."""
+    """El programa externo cambia GPIO15 por el puente y el sketch lo lee (v2..v5)."""
     tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
     tramas: list = []
     parar = threading.Event()
@@ -300,7 +305,7 @@ def entrada(qemu: str, firmware: str) -> int:
         proc.wait()
         tmp.cleanup()
     hola = [struct.unpack("<I", c)[0] for tp, _, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola in ([2], [3], [4])
+    ok = all(r for _, r in pasos) and hola in ([2], [3], [4], [5])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
     return 0 if ok else 1
@@ -337,25 +342,25 @@ def analogico(qemu: str, firmware: str) -> int:
 
     hola = [(v, c) for tp, v, _, c in tramas if tp == 1]
     ok = all(r for _, r in pasos) and hola in (
-        [(3, struct.pack("<I", 3))], [(4, struct.pack("<I", 4))])
+        [(3, struct.pack("<I", 3))], [(4, struct.pack("<I", 4))],
+        [(5, struct.pack("<I", 5))])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK analogico" if ok else "FALLO analogico\n" + buf[0][-600:])
     return 0 if ok else 1
 
 
 def comprobar_pwm(tramas: list, texto: str) -> list[str]:
-    """Exige versión 3/4 y una muestra del servo: 50 Hz, ciclo del 5 %."""
+    """Exige versión 3/4/5 y una muestra del servo: 50 Hz, ciclo del 5 %."""
     errores = []
     if "TALLER-OK pwm" not in texto:
         errores.append("sin marca TALLER-OK pwm en la UART")
-    if (not tramas or tramas[0][0] != 1 or tramas[0][1] not in (3, 4)
-            or tramas[0][3] != struct.pack("<I", tramas[0][1])):
-        errores.append(f"la primera trama no es HOLA versión 3/4: {tramas[:1]}")
+    if not tramas or not es_hola(tramas[0], 3):
+        errores.append(f"la primera trama no es HOLA versión 3/4/5: {tramas[:1]}")
     coincide = False
     for tipo, version, _, carga in tramas:
         if tipo != 4:
             continue
-        if version not in (3, 4) or len(carga) != 9:
+        if version not in (3, 4, 5) or len(carga) != 9:
             errores.append(f"trama PWM inválida: versión {version}, {len(carga)} bytes")
             continue
         gpio, frecuencia_mhz, ciclo_ppm = struct.unpack("<BII", carga)
@@ -400,6 +405,99 @@ def pwm(qemu: str, firmware: str) -> int:
     return 1 if errores else 0
 
 
+def trama_entrada_armada(pin_disparo: int, flanco: int, minimo_ns: int,
+                         pin_salida: int, pasos: list[tuple[int, int]]) -> bytes:
+    if (not 0 <= pin_disparo < 40 or flanco not in (0, 1) or
+            not 0 <= minimo_ns <= 0xffffffff or not 0 <= pin_salida < 40 or
+            len(pasos) > 200 or any(not 0 <= espera <= 0xffffffff or nivel not in (0, 1)
+                                    for espera, nivel in pasos)):
+        raise ValueError("ENTRADA_ARMADA inválida: GPIO 0..39, flanco/nivel 0..1, u32 y n<=200")
+    carga = struct.pack("<BBIBH", pin_disparo, flanco, minimo_ns, pin_salida, len(pasos))
+    carga += b"".join(struct.pack("<IB", espera, nivel) for espera, nivel in pasos)
+    return CABECERA.pack(20, 5, len(carga), 0) + carga
+
+
+def comprobar_armado(tramas: list, texto: str) -> list[str]:
+    """Medidas completas ±3 µs y exactamente dos DISPARO(4) y un DISPARO(5)."""
+    errores = []
+    if not tramas or not es_hola(tramas[0], 5):
+        errores.append(f"la primera trama no es HOLA versión 5: {tramas[:1]}")
+    for etiqueta in ("DHT", "DHT2"):
+        lineas = re.findall(r"^" + etiqueta + r"=[^\r\n]*", texto, re.MULTILINE)
+        medida = re.fullmatch(etiqueta + r"=(\d+),(\d+),(\d+),(\d+)", lineas[0]) if len(lineas) == 1 else None
+        if medida is None or any(abs(int(v) - esperado) > 3
+                                 for v, esperado in zip(medida.groups(), (80, 80, 50, 70))):
+            errores.append(f"{etiqueta} fuera de ±3 µs o incompleto: {lineas}")
+    ecos = re.findall(r"^ECO=[^\r\n]*", texto, re.MULTILINE)
+    eco = re.fullmatch(r"ECO=(\d+)", ecos[0]) if len(ecos) == 1 else None
+    if eco is None or not 1163 <= int(eco[1]) <= 1169:
+        errores.append(f"ECO fuera de 1163..1169 µs: {ecos}")
+    for linea in ("CORTO=SIN_RESPUESTA", "ECO_CORTO=0", "TALLER-OK armado"):
+        if len(re.findall(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE)) != 1:
+            errores.append(f"sin línea única {linea}")
+    if "TALLER-FALLO" in texto:
+        errores.append("el firmware anunció TALLER-FALLO")
+    disparos = [(v, c) for tp, v, _, c in tramas if tp == 6]
+    if (len(disparos) != 3 or any(v != 5 or len(c) != 1 for v, c in disparos) or
+            [c for _, c in disparos].count(b"\x04") != 2 or
+            [c for _, c in disparos].count(b"\x05") != 1):
+        errores.append(f"DISPARO incorrectos (esperados pin 4: 2, pin 5: 1): {disparos}")
+    tiempos = [t for _, _, t, _ in tramas]
+    if tiempos != sorted(tiempos):
+        errores.append("t_ns decreciente")
+    return errores
+
+
+def armado(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
+    tramas: list = []
+    parar = threading.Event()
+    s_puente = s_uart = hilo = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        fin = time.monotonic() + 15
+        while not tramas and time.monotonic() < fin and proc.poll() is None:
+            time.sleep(0.01)
+        if tramas and es_hola(tramas[0], 5):
+            # TRIG debe estar ya bajo antes de armar: habilitar OUTPUT bajo
+            # desde INPUT (conducido alto) también produce un flanco válido.
+            texto = leer_uart_hasta(s_uart, ["ARMADO-LISTO"], 30)
+            if "ARMADO-LISTO" not in texto:
+                print("FALLO armado: sin ARMADO-LISTO\n" + texto[-1000:])
+                return 1
+            # El sketch espera 1 s antes de la primera lectura. ECHO reposa bajo.
+            s_puente.sendall(trama_entrada(18, 0) +
+                             trama_entrada_armada(4, 1, 800000, 4,
+                                 [(30000, 0), (80000, 1), (80000, 0),
+                                  (50000, 1), (70000, 0), (50000, 1)]) +
+                             trama_entrada_armada(5, 0, 8000, 18,
+                                 [(450000, 1), (1166000, 0)]))
+            texto += leer_uart_hasta(s_uart, ["TALLER-OK armado", "TALLER-FALLO"], 60)
+            time.sleep(0.5)
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        tmp.cleanup()
+
+    errores = comprobar_armado(tramas, texto)
+    print("DISPARO:", {pin: sum(tp == 6 and c == bytes([pin])
+                                 for tp, _, _, c in tramas) for pin in (4, 5)})
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO armado\n" + texto[-1000:] if errores else "OK armado")
+    return 1 if errores else 0
+
+
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
     if modo == "humo":
@@ -412,4 +510,6 @@ if __name__ == "__main__":
         sys.exit(analogico(qemu, sys.argv[3]))
     if modo == "i2c":
         sys.exit(i2c(qemu, sys.argv[3]))
+    if modo == "armado":
+        sys.exit(armado(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))

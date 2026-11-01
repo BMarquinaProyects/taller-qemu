@@ -52,6 +52,46 @@ void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel)
     }
 }
 
+void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo)
+{
+    if (gpio_del_chip) {
+        taller_armado_recibir(&gpio_del_chip->armado, datos, largo);
+    }
+}
+
+static void esp32_gpio_paso_armado(void *opaque)
+{
+    Esp32GpioTemporizadorArmado *t = opaque;
+    TallerArmadoRanura *r = &t->gpio->armado.ranuras[t->indice];
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint8_t pin;
+    bool nivel;
+
+    /* Incluye esperas cero y pasos vencidos, siempre con un máximo de 200. */
+    while (taller_armado_avanzar(r, ahora_ns, &pin, &nivel)) {
+        esp32_gpio_fijar_entrada(pin, nivel); /* misma ruta que ENTRADA */
+    }
+    if (r->sonando) {
+        timer_mod_ns(t->timer, r->proximo_ns);
+    }
+}
+
+static void esp32_gpio_observar_armados(Esp32GpioState *s)
+{
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint8_t disparos = taller_armado_observar(&s->armado, s->out, s->enable,
+                                             ahora_ns);
+
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        if (disparos & (1u << i)) {
+            taller_puente_disparo(s->armado.ranuras[i].en_curso.pin_disparo,
+                                  ahora_ns);
+            /* Aplica el primer paso aquí si su espera es cero. */
+            esp32_gpio_paso_armado(&s->trenes[i]);
+        }
+    }
+}
+
 /* Taller: los registros "1" (pines 32-39) usan solo 8 bits. */
 static uint32_t parte_baja(uint64_t v) { return (uint32_t)v; }
 static uint32_t parte_alta(uint64_t v) { return (uint32_t)(v >> 32) & ESP32_GPIO_MASCARA_ALTA; }
@@ -132,6 +172,7 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
     }
     if (s->out != out_antes || s->enable != enable_antes) {
         taller_puente_gpio(s->out, s->enable);
+        esp32_gpio_observar_armados(s);
     }
 }
 
@@ -150,6 +191,11 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
     s->out = 0;
     s->enable = 0;
     s->in_externo = ~0ull;
+    /* Reset del chip: conservar sensores armados, cancelar trenes en curso. */
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        timer_del(s->trenes[i].timer);
+    }
+    taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32_GPIO_SENAL_SOFTWARE;
     }
@@ -169,6 +215,14 @@ static void esp32_gpio_init(Object *obj)
     Esp32GpioState *s = ESP32_GPIO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
     gpio_del_chip = s;
+    /* Todos altos y antigüedad desde t=0, antes de cualquier acceso GPIO. */
+    taller_armado_iniciar(&s->armado, 0);
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        s->trenes[i].gpio = s;
+        s->trenes[i].indice = i;
+        s->trenes[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         esp32_gpio_paso_armado, &s->trenes[i]);
+    }
 
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
@@ -177,6 +231,19 @@ static void esp32_gpio_init(Object *obj)
                           TYPE_ESP32_GPIO, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+}
+
+static void esp32_gpio_finalize(Object *obj)
+{
+    Esp32GpioState *s = ESP32_GPIO(obj);
+
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        timer_del(s->trenes[i].timer);
+        timer_free(s->trenes[i].timer);
+    }
+    if (gpio_del_chip == s) {
+        gpio_del_chip = NULL;
+    }
 }
 
 static Property esp32_gpio_properties[] = {
@@ -201,6 +268,7 @@ static const TypeInfo esp32_gpio_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(Esp32GpioState),
     .instance_init = esp32_gpio_init,
+    .instance_finalize = esp32_gpio_finalize,
     .class_init = esp32_gpio_class_init,
     .class_size = sizeof(Esp32GpioClass),
 };

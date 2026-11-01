@@ -3,6 +3,8 @@
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "hw/registerfields.h"
+#include "qemu/timer.h"
+#include "hw/misc/taller_armado.h"
 
 #define TYPE_ESP32_GPIO "esp32.gpio"
 #define ESP32_GPIO(obj)             OBJECT_CHECK(Esp32GpioState, (obj), TYPE_ESP32_GPIO)
@@ -37,6 +39,12 @@ REG32(GPIO_FUNC0_OUT_SEL_CFG, 0x0530)
 #define ESP32_STRAP_MODE_FLASH_BOOT 0x12
 #define ESP32_STRAP_MODE_UART_BOOT  0x0f
 
+typedef struct Esp32GpioTemporizadorArmado {
+    QEMUTimer *timer;
+    struct Esp32GpioState *gpio;
+    unsigned indice;
+} Esp32GpioTemporizadorArmado;
+
 typedef struct Esp32GpioState {
     SysBusDevice parent_obj;
 
@@ -48,10 +56,14 @@ typedef struct Esp32GpioState {
     uint64_t enable;     /* 1 = el pin es salida */
     uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
     uint32_t seleccion_salida[ESP32_GPIO_CANTIDAD_PINES];
+    TallerArmado armado;
+    Esp32GpioTemporizadorArmado trenes[TALLER_ARMADO_RANURAS];
 } Esp32GpioState;
 
 /* Taller: nivel que llega desde fuera a un pin de entrada (botones, sensores…). */
 void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel);
+/* Carga ENTRADA_ARMADA ya separada de su cabecera; ignora cargas inválidas. */
+void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo);
 /* Primer pin conectado a la señal de la matriz de salida, o -1. */
 int esp32_gpio_pin_de_senal(int senal);
 

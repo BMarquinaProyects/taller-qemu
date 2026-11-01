@@ -24,9 +24,10 @@ static CharBackend puente_fe;
 static bool puente_activo;
 
 /* Tramas que llegan del programa externo: se acumulan hasta tener una entera. */
-/* I2C_REGISTROS necesita 12 + 3 + 240 = 255 bytes; aquí caben 268. */
-static uint8_t entrada_buf[CABECERA + 256];
+/* ENTRADA_ARMADA: cabecera + 9 bytes fijos + 200 pasos de 5 bytes. */
+static uint8_t entrada_buf[CABECERA + TALLER_ARMADO_CARGA_MAX];
 static size_t entrada_len;
+static size_t entrada_descartar;
 
 static void procesar_trama_entrante(const uint8_t *t, uint16_t largo)
 {
@@ -48,6 +49,8 @@ static void procesar_trama_entrante(const uint8_t *t, uint16_t largo)
                largo >= 3 && largo <= 3 + 240) {
         taller_i2c_registros(t[CABECERA], t[CABECERA + 1], t[CABECERA + 2],
                             t + CABECERA + 3, largo - 3);
+    } else if (t[0] == TALLER_TRAMA_ENTRADA_ARMADA) {
+        esp32_gpio_armar_entrada(t + CABECERA, largo);
     }
     /* otros tipos: se ignoran (compatibilidad con versiones futuras) */
 }
@@ -59,13 +62,22 @@ static int puente_puede_leer(void *opaque)
 
 static void puente_leer(void *opaque, const uint8_t *buf, int size)
 {
+    if (entrada_descartar) {
+        size_t n = MIN((size_t)size, entrada_descartar);
+
+        entrada_descartar -= n;
+        buf += n;
+        size -= n;
+    }
     memcpy(entrada_buf + entrada_len, buf, size);
     entrada_len += size;
     while (entrada_len >= CABECERA) {
         uint16_t largo = lduw_le_p(entrada_buf + 2);
         size_t total = CABECERA + largo;
         if (total > sizeof(entrada_buf)) {
-            entrada_len = 0; /* trama imposible: se descarta todo */
+            /* Drenar TODA la trama: sus restos no son otra cabecera. */
+            entrada_descartar = total - entrada_len;
+            entrada_len = 0;
             return;
         }
         if (entrada_len < total) {
@@ -81,18 +93,35 @@ static void puente_leer(void *opaque, const uint8_t *buf, int size)
 static uint8_t spi_buf[BUSES_SPI][1 + CARGA_MAX_SPI];
 static uint16_t spi_len[BUSES_SPI];
 
-static void enviar(uint8_t tipo, const uint8_t *carga, uint16_t largo)
+static void enviar_en(uint8_t tipo, const uint8_t *carga, uint16_t largo,
+                      int64_t t_ns)
 {
     uint8_t cab[12];
     cab[0] = tipo;
     cab[1] = TALLER_PUENTE_VERSION;
     stw_le_p(cab + 2, largo);
-    stq_le_p(cab + 4, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    stq_le_p(cab + 4, t_ns);
     /* Bloqueante a propósito: el receptor (Taller) siempre está leyendo. */
     qemu_chr_fe_write_all(&puente_fe, cab, sizeof(cab));
     if (largo) {
         qemu_chr_fe_write_all(&puente_fe, carga, largo);
     }
+}
+
+static void enviar(uint8_t tipo, const uint8_t *carga, uint16_t largo)
+{
+    enviar_en(tipo, carga, largo, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+void taller_puente_disparo(uint8_t pin, int64_t t_ns)
+{
+    if (!puente_activo) {
+        return;
+    }
+    for (int b = 0; b < BUSES_SPI; b++) {
+        taller_puente_spi_fin(b);
+    }
+    enviar_en(TALLER_TRAMA_DISPARO, &pin, 1, t_ns);
 }
 
 void taller_puente_iniciar(Chardev *chr)
