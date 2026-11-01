@@ -174,6 +174,7 @@ static void esp32_soc_reset(DeviceState *dev)
         device_cold_reset(DEVICE(&s->gpio));
         /* LEDC conserva registros y muestras PWM; también debe perderlos aquí. */
         device_cold_reset(DEVICE(&s->ledc));
+        device_cold_reset(DEVICE(&s->rmt));
         for (int i = 0; i < ESP32_UART_COUNT; ++i) {
             device_cold_reset(DEVICE(&s->uart[i]));
         }
@@ -404,6 +405,11 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     qdev_realize(DEVICE(&s->ledc), &s->periph_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->ledc, DR_REG_LEDC_BASE);
 
+    qdev_realize(DEVICE(&s->rmt), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->rmt, DR_REG_RMT_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->rmt), 0,
+                       qdev_get_gpio_in(intmatrix_dev, ETS_RMT_INTR_SOURCE));
+
     qdev_realize(DEVICE(&s->rtc_cntl), &s->rtc_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->rtc_cntl, DR_REG_RTCCNTL_BASE);
 
@@ -553,7 +559,6 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     esp32_soc_add_unimp_device(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.rmt", DR_REG_RMT_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.pcnt", DR_REG_PCNT_BASE, 0x1000);
 
     /* Emulation of a fake register used to mark that the chip is run via QEMU */
@@ -664,6 +669,7 @@ static void esp32_soc_init(Object *obj)
     object_initialize_child(obj, "aes", &s->aes, TYPE_ESP32_AES);
 
     object_initialize_child(obj, "ledc", &s->ledc, TYPE_ESP32_LEDC);
+    object_initialize_child(obj, "rmt", &s->rmt, TYPE_ESP32_RMT);
 
     object_initialize_child(obj, "rsa", &s->rsa, TYPE_ESP32_RSA);
 

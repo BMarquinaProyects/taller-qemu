@@ -1,11 +1,11 @@
 /*
  * Puente de Taller: envía a un programa externo, por un chardev, lo que el firmware
- * hace con los pines (GPIO), SPI, PWM e I2C, con marca de tiempo virtual.
+ * hace con los pines (GPIO), SPI, PWM, I2C y RMT, con marca de tiempo virtual.
  *
- * Protocolo v5 (little-endian; v4 + trenes armados). Cabecera de 12 bytes:
- *   u8 tipo, u8 version (=5), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
+ * Protocolo v6 (little-endian; v5 + RMT TX). Cabecera de 12 bytes:
+ *   u8 tipo, u8 version (=6), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
  * Tipos (QEMU -> programa externo):
- *   1 HOLA  carga: u32 version_protocolo (=5)
+ *   1 HOLA  carga: u32 version_protocolo (=6)
  *   2 GPIO  carga: u64 niveles, u64 salidas   (bit n = GPIO n)
  *   3 SPI   carga: u8 bus (2 = HSPI, 3 = VSPI) + bytes MOSI de una transacción (máx. 4096)
  *   4 PWM   carga: u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm (9 bytes, sin relleno)
@@ -14,6 +14,11 @@
  *           al STOP o START siguiente; máx. 4094 bytes de datos por trama
  *           transacciones largas se trocean, repitiendo bus/dirección, sin cabecera extra
  *   6 DISPARO carga: u8 pin_disparo; t_ns = instante virtual del flanco (desde v5)
+ *   7 RMT carga: u8 canal, u8 gpio, u32 tick_ps, u32 simbolos... (desde v6)
+ *           símbolos crudos LE, incluido fin; gpio=255 si no está conectado.
+ *           Se emite al terminar; t_ns = inicio del tren. Máx. 16382 símbolos
+ *           por trama (65534 bytes). Trozos consecutivos repiten canal/gpio/tick
+ *           y t_ns, sin indicador adicional de fin; no se parte un símbolo.
  * Tipos (programa externo -> QEMU; t_ns se ignora):
  *  16 ENTRADA carga: u8 pin, u8 nivel  (nivel externo de un pin de entrada; t_ns se ignora)
  *             disponible desde v2
@@ -46,7 +51,7 @@
 
 #define TYPE_TALLER_SPI "taller.spi"
 #define TALLER_PUENTE_CHARDEV "taller-puente"
-#define TALLER_PUENTE_VERSION 5
+#define TALLER_PUENTE_VERSION 6
 
 enum {
     TALLER_TRAMA_HOLA = 1,
@@ -55,6 +60,7 @@ enum {
     TALLER_TRAMA_PWM = 4,
     TALLER_TRAMA_I2C_ESCRITURA = 5,
     TALLER_TRAMA_DISPARO = 6,
+    TALLER_TRAMA_RMT = 7,
     TALLER_TRAMA_ENTRADA = 16,
     TALLER_TRAMA_ANALOGICO = 17,
     TALLER_TRAMA_I2C_DISPOSITIVO = 18,
@@ -68,6 +74,8 @@ bool taller_puente_activo(void);
 void taller_puente_gpio(uint64_t niveles, uint64_t salidas);
 void taller_puente_pwm(uint8_t gpio, uint32_t frecuencia_mhz, uint32_t ciclo_ppm);
 void taller_puente_disparo(uint8_t pin, int64_t t_ns);
+void taller_puente_rmt(uint8_t canal, uint8_t gpio, uint32_t tick_ps,
+                        const uint32_t *simbolos, size_t cantidad, int64_t t_ns);
 void taller_puente_spi_byte(uint8_t bus, uint8_t mosi);
 void taller_puente_spi_fin(uint8_t bus);
 void taller_puente_i2c_escritura(uint8_t bus, uint8_t direccion,

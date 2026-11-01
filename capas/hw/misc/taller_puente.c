@@ -124,6 +124,33 @@ void taller_puente_disparo(uint8_t pin, int64_t t_ns)
     enviar_en(TALLER_TRAMA_DISPARO, &pin, 1, t_ns);
 }
 
+void taller_puente_rmt(uint8_t canal, uint8_t gpio, uint32_t tick_ps,
+                        const uint32_t *simbolos, size_t cantidad, int64_t t_ns)
+{
+    /* 6 bytes fijos y palabras enteras dentro del u16 longitud_carga. */
+    g_autofree uint8_t *carga = NULL;
+
+    if (!puente_activo) {
+        return;
+    }
+    for (int b = 0; b < BUSES_SPI; b++) {
+        taller_puente_spi_fin(b);
+    }
+    carga = g_malloc(65534);
+    carga[0] = canal;
+    carga[1] = gpio;
+    stl_le_p(carga + 2, tick_ps);
+    do {
+        size_t n = MIN(cantidad, (size_t)16382);
+        for (size_t i = 0; i < n; i++) {
+            stl_le_p(carga + 6 + i * 4, simbolos[i]);
+        }
+        enviar_en(TALLER_TRAMA_RMT, carga, 6 + n * 4, t_ns);
+        simbolos += n;
+        cantidad -= n;
+    } while (cantidad);
+}
+
 void taller_puente_iniciar(Chardev *chr)
 {
     uint8_t version[4];

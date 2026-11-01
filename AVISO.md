@@ -12,3 +12,5 @@ Cambios de Taller (resumen):
 - Dispositivo "puente" que envía a un programa externo, por un `chardev`, los cambios de
   GPIO y los bytes de SPI con marca de tiempo virtual (`hw/misc/taller_puente.c`).
 - Periférico SSI en SPI2/SPI3 conectado al puente (`hw/ssi/esp32_spi.c`, `hw/xtensa/esp32.c`).
+- RMT TX del ESP32 clásico, con RAM de símbolos, umbral ping-pong, tiempo virtual
+  e IRQ; puente v6 con trenes RMT completos (`hw/misc/esp32_rmt.c`).

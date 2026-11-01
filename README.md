@@ -1,6 +1,6 @@
 # taller-qemu
 
-QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, puente de GPIO/SPI/PWM/analógico/I2C y entradas temporizadas) que usa
+QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas) que usa
 **Taller**, un simulador de placas y componentes. Ver `AVISO.md` para el origen y los cambios.
 
 ## Compilar
@@ -16,19 +16,20 @@ TRABAJO=~/qemu-trabajo ./construir.sh
 Windows: MSYS2 **UCRT64** (MINGW64 ya no trae `libslirp`) con los paquetes `mingw-w64-ucrt-x86_64-{gcc,glib2,pixman,libslirp,libgcrypt,ninja,meson,python,pkgconf}`.
 Ver `.github/workflows/qemu.yml`.
 
-## Protocolo del puente (v5)
+## Protocolo del puente (v6)
 
 Con `-chardev socket,id=taller-puente,host=127.0.0.1,port=<p>,server=on,wait=on`, QEMU envía tramas
-little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=5, u16 longitud_carga, u64 t_ns`.
+little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=6, u16 longitud_carga, u64 t_ns`.
 
 | tipo | carga |
 |---|---|
-| 1 HOLA | `u32 version_protocolo` (= 5) |
+| 1 HOLA | `u32 version_protocolo` (= 6) |
 | 2 GPIO | `u64 niveles, u64 salidas` (bit n = GPIO n) |
 | 3 SPI  | `u8 bus` (2 = HSPI, 3 = VSPI) + bytes MOSI de una transacción |
 | 4 PWM | `u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm` (9 bytes, sin relleno) |
 | 5 I2C_ESCRITURA | `u8 bus, u8 direccion, bytes…`: escritura completa, incluido el puntero; hasta 4094 bytes de datos por trama |
 | 6 DISPARO | `u8 pin_disparo`; `t_ns` es el instante virtual del flanco que inicia el tren |
+| 7 RMT | `u8 canal, u8 gpio, u32 tick_ps, u32 símbolos…`: símbolos crudos LE; `t_ns` es el inicio de TX; se envía al terminar |
 | 16 ENTRADA (hacia QEMU) | `u8 pin, u8 nivel`: nivel externo de un pin de entrada (botones, sensores) |
 | 17 ANALOGICO (hacia QEMU) | `u8 gpio, u16 valor` (3 bytes, sin relleno): muestra cruda ADC1, saturada a 4095 |
 | 18 I2C_DISPOSITIVO (hacia QEMU) | `u8 bus, u8 direccion, u8 activo`: alta o baja de una dirección |
@@ -37,8 +38,9 @@ little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=5, u16 longitud
 
 Sin ese chardev, QEMU se comporta como el de Espressif.
 
-La versión 5 añade ENTRADA_ARMADA y DISPARO a la versión 4, conservando sus cargas
-y aceptando las tramas entrantes anteriores. HOLA y todas las tramas salientes anuncian 5.
+La versión 6 añade RMT a la versión 5, conserva las cargas anteriores y acepta las
+tramas entrantes anteriores. HOLA y todas las tramas salientes anuncian 6.
+La versión 5 añade ENTRADA_ARMADA y DISPARO a la versión 4, conservando sus cargas.
 La versión 4 añade I2C a la versión 3, conservando las cargas anteriores. La versión 3
 añade PWM y ANALOGICO a la versión 2. La frecuencia se expresa en milihercios
 (50 Hz = 50000 mHz) y el ciclo en partes por millón (5 % = 50000 ppm;
@@ -110,7 +112,7 @@ al cambiar de pin se apaga el anterior.
 `pruebas/pwm_prueba/pwm_prueba.ino` usa Arduino ESP32 core 3.x. Su imagen completa
 de flash está en `pruebas/pwm_prueba.flash.bin` (generada con el core 3.3.12 y
 `esp32:esp32:esp32:FlashMode=dio,FlashFreq=40`; QEMU necesita arranque DIO).
-El modo `pwm` admite HOLA v3/v4/v5, exige la marca UART y una muestra en GPIO13 de
+El modo `pwm` admite HOLA v3/v4/v5/v6, exige la marca UART y una muestra en GPIO13 de
 50 Hz ±1 % con ciclo del 5 % ±0,3 %:
 
 ```sh
@@ -123,7 +125,7 @@ python3 -m unittest discover -s pruebas -p '*_unitarias.py'
 `pruebas/analogico_prueba/analogico_prueba.ino` lee GPIO34 cada 20 ms con resolución de 12 bits.
 `pruebas/analogico_prueba.flash.bin` contiene la flash completa, compilada con Arduino ESP32
 core 3.3.12 y `esp32:esp32:esp32:FlashMode=dio,FlashFreq=40`.
-El modo `analogico` admite HOLA v3/v4/v5 y exige líneas UART completas: `A=0` inicial,
+El modo `analogico` admite HOLA v3/v4/v5/v6 y exige líneas UART completas: `A=0` inicial,
 1900..2200 tras ANALOGICO(34, 2048) y 4000..4095 tras ANALOGICO(34, 4095).
 En este core, `analogRead` devuelve el resultado crudo; con 12 bits no cambia la resolución
 ni aplica la calibración de `analogReadMilliVolts`. Se conservan los márgenes solicitados.
@@ -139,7 +141,7 @@ python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa analogico pruebas/analog
 
 `pruebas/i2c_prueba/i2c_prueba.ino` usa `Wire` del core Arduino ESP32 3.x,
 bus 0, SDA 21 y SCL 22. Espera un segundo antes de escanear 0x08..0x77.
-El modo `i2c` espera HOLA v4/v5, registra 0x3C y precarga 0xD0/0xD1 con 0x60/0x61.
+El modo `i2c` espera HOLA v4/v5/v6, registra 0x3C y precarga 0xD0/0xD1 con 0x60/0x61.
 Exige únicamente `ENCONTRADO 0x3C`, `LEIDO=60,61`, `TALLER-OK i2c` y
 una trama I2C_ESCRITURA con bus 0, dirección 0x3C y bytes `00 AF`.
 La imagen completa `pruebas/i2c_prueba.flash.bin` se genera con core 3.3.12 y
@@ -156,7 +158,7 @@ python3 -m unittest discover -s pruebas -p '*_unitarias.py'
 
 `pruebas/armado_prueba/armado_prueba.ino` configura TRIG bajo, anuncia
 `ARMADO-LISTO` y espera un segundo al inicio para que el script arme ambos trenes
-tras HOLA v5. Esperar esa marca evita contar como disparo la propia habilitación
+tras HOLA v5/v6. Esperar esa marca evita contar como disparo la propia habilitación
 inicial de GPIO5: pasa de entrada (conducido alto) a salida baja.
 
 - A, GPIO4: subida tras al menos 800 µs en bajo. Pasos relativos: 30 µs→0,
@@ -171,7 +173,7 @@ inicial de GPIO5: pasa de entrada (conducido alto) a salida baja.
 
 El modo `armado` exige además `TALLER-OK armado`, exactamente dos DISPARO del pin 4
 y uno del pin 5, sin otros DISPARO ni tiempos decrecientes. `pruebas/todas.sh`
-incluye este modo; los modos previos también admiten HOLA 5.
+incluye este modo; todos los modos previos admiten HOLA 6.
 
 Para A se mide con `esp_cpu_get_cycle_count()` a 240 MHz (comprobado con
 `static_assert`), lectura directa del registro GPIO y las interrupciones locales
@@ -208,3 +210,112 @@ cero, GPIO39, ocupación de ranuras y reset. Compila también el receptor real
 aislado de QOM/chardev para comprobar el descarte de tramas excesivas y fragmentadas.
 Requiere `cc`, `gcc` o `clang` (en Windows sin compilador omite esos dos casos;
 ejecutar la suite en WSL). Las demás pruebas del verificador usan solo Python.
+
+## RMT TX y prueba de NeoPixel
+
+`esp32.rmt` sustituye el hueco del SoC en `0x3ff56000` (alias APB `0x60016000`,
+0x1000 bytes). Emula ocho canales TX y 512 palabras compartidas, en bloques de
+64 por canal. RAM directa en `+0x800`, con `APB_CONF.fifo_mask=1`; con cero,
+`CHnDATA` permite acceso FIFO. `CHnCONF0/1` conservan divisor, tamaño, propietario,
+modo continuo y nivel/habilitación de reposo. `MEM_RD_RST` reinicia el lector y
+el contador de umbral; `APB_MEM_RST`, los punteros FIFO. Son pulsos de control,
+igual que `TX_START` y `REF_CNT_RST`. `CHnSTATUS` refleja lector, activo y memoria
+agotada; no emula estados RX. Con tamaño cero o RAM propiedad de RX, TX no arranca
+y marca el bit de error del canal. Los tamaños que exceden la RAM se acotan al
+final de las 512 palabras. Un reset cancela timers, descarta trenes incompletos,
+borra RAM y restaura registros e IRQ.
+
+Cada palabra contiene `duration0:15, level0:1, duration1:15, level1:1`.
+Una duración cero termina TX; si es la segunda, se consume primero la duración
+inicial. Se conservan las palabras crudas, incluido el marcador de fin leído.
+Con `mem_tx_wrap_en`, el lector vuelve al principio de los bloques del canal.
+Sin wrap, agotar los bloques termina el tren. `tx_conti_mode` repite desde el
+principio al encontrar fin o agotar memoria sin wrap, sin `tx_end` entre vueltas;
+cada vuelta completa se publica como un tren. Un bucle vacío termina para evitar
+un temporizador infinito sin avance de tiempo.
+
+`tx_thr_event` aparece cada `tx_lim` símbolos consumidos (`tx_lim=0` lo desactiva),
+independientemente de su máscara de interrupción. El contador se reinicia en cada
+aviso, aunque RAW siga pendiente; un marcador de duración inicial cero no cuenta.
+`tx_end` aparece al finalizar el último intervalo. RAW queda retenido;
+ST = RAW & ENA, CLR limpia los bits escritos a uno. La IRQ de nivel llega a
+`ETS_RMT_INTR_SOURCE` (47). APB se fija a 80 MHz y REF a 1 MHz, según
+`ref_always_on`; divisor cero representa 256. El tick se fija al comenzar TX.
+Los plazos usan `QEMU_CLOCK_VIRTUAL`, acumulando picosegundos y redondeando el
+plazo total hacia arriba a ns. Así se conservan los ticks APB de 12,5 ns.
+Solo se consulta la siguiente palabra cuando empieza su intervalo: los símbolos
+ya enviados quedan copiados, aunque el firmware sobrescriba la RAM en la ISR.
+
+El HAL Arduino del core 3.3.12 llama al driver RMT TX de ESP-IDF 5.5 con un
+codificador de copia. `Adafruit NeoPixel` 1.15.5 pide **un bloque**, resolución
+**10 MHz** (APB / 8) y usa símbolos alto/bajo de 4/8 ticks para cero y 8/4 para uno.
+El driver configura wrap y umbral de **32 palabras**, llena inicialmente 64 y
+alterna la recarga de ambas mitades en la ISR. Al completar la codificación
+introduce un símbolo de duración cero y deshabilita la IRQ de umbral. El modelo
+separa cargar y completar un símbolo para respetar ese orden y sus tiempos.
+
+`MEM_OWNER` (bit 5 de `CHnCONF1`) **no** bloquea la transmisión: el driver deja el
+valor de reinicio (1) en los canales de TX y el chip real transmite igual. Ese bit
+solo decide quién escribe la RAM al recibir. Para diagnosticar el driver,
+`TALLER_RMT_TRAZA=1` vuelca a la salida de error cada acceso a los registros del
+RMT (no a su RAM) y cada cambio de la IRQ.
+
+La trama RMT llega **al terminar**, con `t_ns` del **inicio** del tren y el primer
+GPIO conectado a `RMT_SIG_OUT0_IDX + canal` (87 + canal), capturado al iniciar;
+si no hay ninguno, 255. SPI pendiente se vacía antes. Por ello, el `t_ns` de RMT
+puede ser anterior al de otras tramas emitidas durante TX: no hay monotonía
+global entre tipos. RMT no emite pulsos GPIO individuales; el nivel de reposo
+se conserva en los registros y el consumidor recibe los niveles en los símbolos.
+Sin puente ni pin conectado, timers, umbral, fin e IRQ funcionan igualmente.
+
+Cada carga admite **16382 símbolos** (6 + 4·16382 = 65534 bytes). Un tren mayor
+se trocea en tramas consecutivas con idénticos canal, GPIO, tick y `t_ns`, sin
+partir palabras ni intercalar otras tramas. No hay índice ni marca de último
+fragmento: el receptor debe reunir esos fragmentos antes de tratar el final de
+la transmisión como reset WS2812. Las transmisiones incompletas se guardan en
+memoria del anfitrión hasta terminar; un firmware con wrap infinito y sin fin
+puede hacer crecer ese búfer. RX, DMA, portadora y cambios de reloj durante TX
+quedan fuera del modelo.
+
+`pruebas/rmt_prueba/rmt_prueba.ino` envía en GPIO13 los ocho colores
+rojo, verde, azul, blanco, apagado, (1,2,3), (128,64,32), (255,255,0), y después
+30 LED con RGB `(7·i, 255−5·i, 3·i)`, `i=0..29`. El verificador usa `tick_ps`,
+umbral alto >0,55 µs, orden GRB y MSB primero; exige ambos trenes completos,
+GPIO13, HOLA 6 y `TALLER-OK rmt`.
+
+`T_SHOW` mide `micros()` alrededor del primer `show()` y debe estar entre
+**200 y 2000 µs**, inclusivos. Se prepara el mismo canal con `rmtInit` antes de
+medir para excluir su `delay(1)`. El tren nominal de esta versión de NeoPixel
+dura **230,4 µs** (192 × 1,2 µs); ISR, codificación y despertar de la tarea añaden
+coste. La medida real y la integración se comprueban después de compilar QEMU.
+El modo `humo` permite comprobar también el firmware sin puente.
+
+La imagen completa de 4 MiB `pruebas/rmt_prueba.flash.bin` está compilada con
+CLI 1.5.1, core 3.3.12, NeoPixel 1.15.5 y `esp32:esp32:esp32:FlashMode=dio`:
+
+```powershell
+$cli = "$env:APPDATA\dev.taller.app\arduino-cli\1.5.1\arduino-cli.exe"
+$config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
+$compilacion = Join-Path (Get-Location) '.trabajo\rmt-compilacion'
+& $cli --config-file $config lib install 'Adafruit NeoPixel@1.15.5'
+& $cli --config-file $config compile --fqbn esp32:esp32:esp32:FlashMode=dio `
+  --build-path $compilacion pruebas/rmt_prueba
+if ($LASTEXITCODE -ne 0) { throw 'Falló la compilación de rmt_prueba' }
+Copy-Item "$compilacion\rmt_prueba.ino.merged.bin" pruebas/rmt_prueba.flash.bin
+Remove-Item -LiteralPath $compilacion -Recurse -Force
+```
+
+```sh
+python3 -m unittest discover -s pruebas -p '*_unitarias.py'
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa rmt pruebas/rmt_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa humo pruebas/rmt_prueba.flash.bin 'TALLER-OK rmt'
+bash pruebas/todas.sh /ruta/qemu-system-xtensa
+```
+
+`rmt_logica.c` prueba la misma cabecera que usa el dispositivo: ping-pong de
+192/720 símbolos, varios bloques, ocho canales, umbral periódico y no divisor
+del bloque, wrap, duración cero en ambas mitades, bucle, límites, reset, relojes,
+memoria directa/FIFO e interrupciones. `rmt_unitarias.py` compila ese C en WSL,
+prueba colores y fragmentos del verificador y compila el emisor real aislado
+de chardev para verificar LE y troceado de 20000 símbolos. Estas pruebas no
+sustituyen la compilación de QEMU ni certifican la latencia real de su IRQ.

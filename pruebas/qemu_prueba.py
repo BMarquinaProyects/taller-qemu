@@ -8,6 +8,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> analogico <analogico_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> i2c <i2c_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> armado <armado_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> rmt <rmt_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -29,7 +30,7 @@ CABECERA = struct.Struct("<BBHQ")  # tipo, version, longitud_carga, t_ns
 
 def es_hola(trama: tuple, minima: int) -> bool:
     tipo, version, _, carga = trama
-    return tipo == 1 and minima <= version <= 5 and carga == struct.pack("<I", version)
+    return tipo == 1 and minima <= version <= 6 and carga == struct.pack("<I", version)
 
 
 def puerto_libre() -> int:
@@ -191,17 +192,17 @@ def trama_i2c_registros(bus: int, direccion: int, registro: int, datos: bytes) -
 
 
 def comprobar_i2c(tramas: list, texto: str) -> list[str]:
-    """Exige HOLA v4/v5, una dirección, lectura del espejo y escritura exacta."""
+    """Exige HOLA v4/v5/v6, una dirección, lectura del espejo y escritura exacta."""
     errores = []
     if not tramas or not es_hola(tramas[0], 4):
-        errores.append(f"la primera trama no es HOLA versión 4/5: {tramas[:1]}")
+        errores.append(f"la primera trama no es HOLA versión 4/5/6: {tramas[:1]}")
     encontrados = re.findall(r"^ENCONTRADO[^\r\n]*", texto, re.MULTILINE)
     if encontrados != ["ENCONTRADO 0x3C"]:
         errores.append(f"escaneo I2C incorrecto: {encontrados}")
     for linea in ("LEIDO=60,61", "TALLER-OK i2c"):
         if not re.search(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE):
             errores.append(f"sin línea {linea} en la UART")
-    if not any(tp == 5 and v in (4, 5) and c == b"\x00\x3c\x00\xaf"
+    if not any(tp == 5 and v in (4, 5, 6) and c == b"\x00\x3c\x00\xaf"
                for tp, v, _, c in tramas):
         errores.append("sin I2C_ESCRITURA(0, 0x3C, 00 AF)")
     return errores
@@ -305,7 +306,7 @@ def entrada(qemu: str, firmware: str) -> int:
         proc.wait()
         tmp.cleanup()
     hola = [struct.unpack("<I", c)[0] for tp, _, _, c in tramas if tp == 1]
-    ok = all(r for _, r in pasos) and hola in ([2], [3], [4], [5])
+    ok = all(r for _, r in pasos) and hola in ([2], [3], [4], [5], [6])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK entrada" if ok else "FALLO entrada\n" + buf[0][-400:])
     return 0 if ok else 1
@@ -343,14 +344,14 @@ def analogico(qemu: str, firmware: str) -> int:
     hola = [(v, c) for tp, v, _, c in tramas if tp == 1]
     ok = all(r for _, r in pasos) and hola in (
         [(3, struct.pack("<I", 3))], [(4, struct.pack("<I", 4))],
-        [(5, struct.pack("<I", 5))])
+        [(5, struct.pack("<I", 5))], [(6, struct.pack("<I", 6))])
     print("pasos:", pasos, "HOLA:", hola)
     print("OK analogico" if ok else "FALLO analogico\n" + buf[0][-600:])
     return 0 if ok else 1
 
 
 def comprobar_pwm(tramas: list, texto: str) -> list[str]:
-    """Exige versión 3/4/5 y una muestra del servo: 50 Hz, ciclo del 5 %."""
+    """Exige versión 3/4/5/6 y una muestra del servo: 50 Hz, ciclo del 5 %."""
     errores = []
     if "TALLER-OK pwm" not in texto:
         errores.append("sin marca TALLER-OK pwm en la UART")
@@ -360,7 +361,7 @@ def comprobar_pwm(tramas: list, texto: str) -> list[str]:
     for tipo, version, _, carga in tramas:
         if tipo != 4:
             continue
-        if version not in (3, 4, 5) or len(carga) != 9:
+        if version not in (3, 4, 5, 6) or len(carga) != 9:
             errores.append(f"trama PWM inválida: versión {version}, {len(carga)} bytes")
             continue
         gpio, frecuencia_mhz, ciclo_ppm = struct.unpack("<BII", carga)
@@ -421,7 +422,7 @@ def comprobar_armado(tramas: list, texto: str) -> list[str]:
     """Medidas completas ±3 µs y exactamente dos DISPARO(4) y un DISPARO(5)."""
     errores = []
     if not tramas or not es_hola(tramas[0], 5):
-        errores.append(f"la primera trama no es HOLA versión 5: {tramas[:1]}")
+        errores.append(f"la primera trama no es HOLA versión 5/6: {tramas[:1]}")
     for etiqueta in ("DHT", "DHT2"):
         lineas = re.findall(r"^" + etiqueta + r"=[^\r\n]*", texto, re.MULTILINE)
         medida = re.fullmatch(etiqueta + r"=(\d+),(\d+),(\d+),(\d+)", lineas[0]) if len(lineas) == 1 else None
@@ -438,7 +439,7 @@ def comprobar_armado(tramas: list, texto: str) -> list[str]:
     if "TALLER-FALLO" in texto:
         errores.append("el firmware anunció TALLER-FALLO")
     disparos = [(v, c) for tp, v, _, c in tramas if tp == 6]
-    if (len(disparos) != 3 or any(v != 5 or len(c) != 1 for v, c in disparos) or
+    if (len(disparos) != 3 or any(v not in (5, 6) or len(c) != 1 for v, c in disparos) or
             [c for _, c in disparos].count(b"\x04") != 2 or
             [c for _, c in disparos].count(b"\x05") != 1):
         errores.append(f"DISPARO incorrectos (esperados pin 4: 2, pin 5: 1): {disparos}")
@@ -498,6 +499,133 @@ def armado(qemu: str, firmware: str) -> int:
     return 1 if errores else 0
 
 
+def decodificar_rmt(simbolos: list[int], tick_ps: int) -> list[tuple[int, int, int]]:
+    """WS2812: pulsos altos >0,55 µs son 1; bytes GRB, MSB primero."""
+    if tick_ps <= 0:
+        raise ValueError("tick_ps debe ser positivo")
+    bits = []
+    alto = 0
+    terminado = False
+    for indice, simbolo in enumerate(simbolos):
+        for mitad in (0, 16):
+            duracion = (simbolo >> mitad) & 0x7fff
+            nivel = (simbolo >> (mitad + 15)) & 1
+            if duracion == 0:
+                if indice != len(simbolos) - 1:
+                    raise ValueError("símbolos después del fin")
+                terminado = True
+                break
+            if nivel:
+                if terminado:
+                    raise ValueError("datos después del reset WS2812")
+                alto += duracion * tick_ps
+            else:
+                if alto:
+                    bits.append(int(alto > 550000))
+                    alto = 0
+                if duracion * tick_ps > 50000000:
+                    terminado = True
+    if alto or len(bits) % 24:
+        raise ValueError(f"tren WS2812 incompleto: {len(bits)} bits")
+    datos = []
+    for inicio in range(0, len(bits), 8):
+        valor = 0
+        for bit in bits[inicio:inicio + 8]:
+            valor = (valor << 1) | bit
+        datos.append(valor)
+    return [(datos[i + 1], datos[i], datos[i + 2]) for i in range(0, len(datos), 3)]
+
+
+def comprobar_rmt(tramas: list, texto: str) -> list[str]:
+    errores = []
+    if not tramas or not es_hola(tramas[0], 6):
+        errores.append("sin HOLA versión 6")
+    medidas = re.findall(r"^T_SHOW=[^\r\n]*", texto, re.MULTILINE)
+    medida = re.fullmatch(r"T_SHOW=(\d+)", medidas[0]) if len(medidas) == 1 else None
+    if medida is None or not 200 <= int(medida[1]) <= 2000:
+        errores.append(f"T_SHOW fuera de 200..2000 µs o incompleto: {medidas}")
+    if (len(re.findall(r"^TALLER-OK rmt\r?$", texto, re.MULTILINE)) != 1 or
+            "TALLER-FALLO" in texto):
+        errores.append("sin marca única TALLER-OK rmt o fallo del firmware")
+    trenes = []
+    anterior = None
+    for tipo, version, t_ns, carga in tramas:
+        if tipo != 7:
+            anterior = None
+            continue
+        if version != 6 or len(carga) < 10 or len(carga) > 65535 or (len(carga) - 6) % 4:
+            errores.append("trama RMT inválida")
+            anterior = None
+            continue
+        canal, gpio, tick_ps = struct.unpack_from("<BBI", carga)
+        if canal > 7 or gpio != 13 or tick_ps == 0:
+            errores.append(f"RMT: canal={canal}, gpio={gpio}, tick_ps={tick_ps}")
+            continue
+        clave = (t_ns, canal, gpio, tick_ps)
+        simbolos = list(struct.unpack_from(f"<{(len(carga) - 6) // 4}I", carga, 6))
+        if clave == anterior:
+            trenes[-1][1].extend(simbolos)
+        else:
+            trenes.append((clave, simbolos))
+        anterior = clave
+    esperados = [[(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255),
+                  (0, 0, 0), (1, 2, 3), (128, 64, 32), (255, 255, 0)],
+                 [(i * 7, 255 - i * 5, i * 3) for i in range(30)]]
+    if len(trenes) != 2:
+        errores.append(f"se esperaban dos transmisiones RMT, recibidas {len(trenes)}")
+    fin_anterior = 0
+    for i, (clave, simbolos) in enumerate(trenes):
+        if clave[0] < fin_anterior:
+            errores.append("tiempos RMT decrecientes o transmisiones solapadas")
+        ticks = 0
+        for simbolo in simbolos:
+            d0, d1 = simbolo & 0x7fff, (simbolo >> 16) & 0x7fff
+            if not d0:
+                break
+            ticks += d0 + d1
+            if not d1:
+                break
+        fin_anterior = clave[0] + (ticks * clave[3] + 999) // 1000
+        try:
+            colores = decodificar_rmt(simbolos, clave[3])
+            if i >= 2 or colores != esperados[i]:
+                errores.append(f"colores RMT del tren {i} incorrectos: {colores}")
+        except ValueError as error:
+            errores.append(str(error))
+    return errores
+
+
+def rmt(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, con_puente=True)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["TALLER-OK rmt", "TALLER-FALLO"], 60)
+        time.sleep(0.5)
+    finally:
+        parar.set()
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        tmp.cleanup()
+    errores = comprobar_rmt(tramas, texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO rmt\n" + texto[-1000:] if errores else "OK rmt: 8 y 30 LED completos; " +
+          ", ".join(re.findall(r"^T_SHOW=\d+", texto, re.MULTILINE)) + " µs (200..2000)")
+    return 1 if errores else 0
+
+
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
     if modo == "humo":
@@ -512,4 +640,6 @@ if __name__ == "__main__":
         sys.exit(i2c(qemu, sys.argv[3]))
     if modo == "armado":
         sys.exit(armado(qemu, sys.argv[3]))
+    if modo == "rmt":
+        sys.exit(rmt(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))
