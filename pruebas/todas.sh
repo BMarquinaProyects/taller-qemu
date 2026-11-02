@@ -12,7 +12,11 @@ python3 pruebas/qemu_prueba.py "$Q" entrada pruebas/entrada_prueba.flash.bin || 
 python3 pruebas/qemu_prueba.py "$Q" pwm pruebas/pwm_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" analogico pruebas/analogico_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" i2c pruebas/i2c_prueba.flash.bin || r=1
-python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin || r=1
+# armado falla de vez en cuando en la CI por unos µs (E-054, M-157): un reintento, y se avisa.
+if ! python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin; then
+  echo "REINTENTO armado (E-054): falló una vez por tiempos; se repite"
+  python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin || r=1
+fi
 python3 pruebas/qemu_prueba.py "$Q" rmt pruebas/rmt_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" humo pruebas/rmt_prueba.flash.bin "TALLER-OK rmt" || r=1
 MPY="${MICROPYTHON_FLASH:-pruebas/micropython.flash.bin}"

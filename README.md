@@ -736,6 +736,10 @@ python3 -m unittest discover -s pruebas -p '*_unitarias.py'
 
 ## Prueba de trenes armados
 
+Investigación de los fallos intermitentes y pruebas de atención tardía:
+[`docs/m157-armado.md`](docs/m157-armado.md). Los plazos ya son acumulativos;
+la causa exacta de CI sigue pendiente y se mantiene la tolerancia de ±3 µs.
+
 `pruebas/armado_prueba/armado_prueba.ino` configura TRIG bajo, anuncia
 `ARMADO-LISTO` y espera un segundo al inicio para que el script arme ambos trenes
 tras HOLA v5/v6. Esperar esa marca evita contar como disparo la propia habilitación

@@ -67,6 +67,58 @@ static void rearme_y_desarmado(void)
     assert(!taller_armado_observar(&s, 0, 0, 3800000));
 }
 
+static void plazos_del_dht_con_atencion_tardia(void)
+{
+    /* Mismo tren de seis pasos que inyecta el modo armado, desde t=1 ms. */
+    static const int64_t previstos[] = {
+        1030000, 1110000, 1190000, 1240000, 1310000, 1360000
+    };
+    static const int64_t atendidos[] = {
+        1034000, 1112000, 1195000, 1241000, 1317000, 1369000
+    };
+    static const bool niveles[] = {false, true, false, true, false, true};
+    static const uint8_t carga[] = {
+        4, 1, 0x00, 0x35, 0x0c, 0, 4, 6, 0,
+        0x30, 0x75, 0, 0, 0, /* 30 us */
+        0x80, 0x38, 1, 0, 1, /* 80 us */
+        0x80, 0x38, 1, 0, 0, /* 80 us */
+        0x50, 0xc3, 0, 0, 1, /* 50 us */
+        0x70, 0x11, 1, 0, 0, /* 70 us */
+        0x50, 0xc3, 0, 0, 1  /* 50 us */
+    };
+    TallerArmado s;
+    uint8_t pin;
+    bool nivel;
+
+    taller_armado_iniciar(&s, 0);
+    assert(taller_armado_recibir(&s, carga, sizeof(carga)));
+    assert(!taller_armado_observar(&s, 0, 1ull << 4, 0));
+    assert(taller_armado_observar(&s, 0, 0, 1000000) == 1);
+    TallerArmadoRanura *r = &s.ranuras[0];
+    for (unsigned i = 0; i < 6; i++) {
+        assert(r->proximo_ns == previstos[i]);
+        assert(!taller_armado_avanzar(r, previstos[i] - 1, &pin, &nivel));
+        assert(taller_armado_avanzar(r, atendidos[i], &pin, &nivel));
+        assert(pin == 4 && nivel == niveles[i]);
+    }
+    assert(!r->sonando);
+    assert(!taller_armado_avanzar(r, 2000000, &pin, &nivel));
+
+    /* Una sola atención llega después de cuatro plazos: no desplaza el quinto. */
+    assert(!taller_armado_observar(&s, 0, 1ull << 4, 2000000));
+    assert(taller_armado_observar(&s, 0, 0, 3000000) == 1);
+    for (unsigned i = 0; i < 4; i++) {
+        assert(taller_armado_avanzar(r, 3245000, &pin, &nivel));
+        assert(pin == 4 && nivel == niveles[i]);
+    }
+    assert(r->sonando && r->indice == 4 && r->proximo_ns == 3310000);
+    assert(!taller_armado_avanzar(r, 3245000, &pin, &nivel));
+    assert(taller_armado_avanzar(r, 3310000, &pin, &nivel));
+    assert(!nivel && r->proximo_ns == 3360000);
+    assert(taller_armado_avanzar(r, 3360000, &pin, &nivel));
+    assert(nivel && !r->sonando);
+}
+
 static void validacion_atomica(void)
 {
     TallerArmado s, antes;
@@ -149,6 +201,7 @@ int main(void)
 {
     flancos_y_pasos();
     rearme_y_desarmado();
+    plazos_del_dht_con_atencion_tardia();
     validacion_atomica();
     ranuras_y_reloj();
     puts("OK lógica C: flancos, pasos, rearme, validación, ranuras y reloj");

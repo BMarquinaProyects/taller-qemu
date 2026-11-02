@@ -10,6 +10,25 @@ import qemu_prueba
 
 
 class PruebaArmado(unittest.TestCase):
+    def compilar_y_ejecutar(self, fuente, tmp):
+        cc = (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang") or
+              shutil.which("cl"))
+        if cc is None:
+            self.skipTest("compilador C no disponible")
+        raiz = Path(__file__).resolve().parents[1]
+        exe = Path(tmp) / "armado.exe"
+        if Path(cc).stem.lower() == "cl":
+            comando = [cc, "/nologo", "/std:c11", "/W4", "/WX", "/wd4100",
+                       "/wd4244", "/wd4267", f"/I{raiz / 'capas/include'}",
+                       f"/I{tmp}", str(fuente), f"/Fe:{exe}",
+                       f"/Fo:{Path(tmp) / 'armado.obj'}"]
+        else:
+            comando = [cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
+                       "-Wno-unused-parameter", "-I", str(raiz / "capas/include"),
+                       "-I", tmp, str(fuente), "-o", str(exe)]
+        subprocess.run(comando, check=True)
+        subprocess.run([str(exe)], check=True)
+
     def setUp(self):
         self.texto = ("DHT=80,80,50,70\r\nDHT2=80,80,50,70\r\n"
                       "CORTO=SIN_RESPUESTA\r\nECO=1166\r\nECO_CORTO=0\r\n"
@@ -32,6 +51,7 @@ class PruebaArmado(unittest.TestCase):
 
     def test_rechaza_medidas_incorrectas_incompletas_o_duplicadas(self):
         for antes, despues in [("80,80,50,70", "76,80,50,70"),
+                               ("DHT2=80,80,50,70", "DHT2=80,80,50,74"),
                                ("1166", "1170"), ("1166", "1162"),
                                ("ECO_CORTO=0", "ECO_CORTO=1"),
                                ("CORTO=SIN_RESPUESTA", "CORTO=RESPUESTA"),
@@ -78,21 +98,27 @@ class PruebaArmado(unittest.TestCase):
             "ENCONTRADO 0x3C\nLEIDO=60,61\nTALLER-OK i2c\n"), [])
 
     def test_logica_c_real(self):
-        cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
-        if cc is None:
-            self.skipTest("compilador C no disponible; ejecutar esta prueba en WSL")
         raiz = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:
-            exe = Path(tmp) / "armado"
-            subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
-                            "-I", str(raiz / "capas/include"),
-                            str(raiz / "pruebas/armado_logica.c"), "-o", str(exe)], check=True)
-            subprocess.run([str(exe)], check=True)
+            self.compilar_y_ejecutar(raiz / "pruebas/armado_logica.c", tmp)
+
+    def test_gpio_clasico_real_con_temporizadores_tardios(self):
+        raiz = Path(__file__).resolve().parents[1]
+        cab = (raiz / "capas/include/hw/gpio/esp32_gpio.h").read_text(encoding="utf-8")
+        cab = "\n".join(l for l in cab.splitlines()
+                        if not l.startswith(("#include", "#pragma")))
+        fuente = (raiz / "capas/hw/gpio/esp32_gpio.c").read_text(encoding="utf-8")
+        modelo = fuente[fuente.index("/* Taller: el GPIO del chip"):
+                        fuente.index("static const MemoryRegionOps")]
+        plantilla = (raiz / "pruebas/armado_gpio_modelo.c").read_text(encoding="utf-8")
+        codigo = plantilla.replace("/* CABECERA_REAL */", cab).replace(
+            "/* MODELO_REAL */", modelo)
+        with tempfile.TemporaryDirectory() as tmp:
+            c = Path(tmp) / "modelo.c"
+            c.write_text(codigo, encoding="utf-8")
+            self.compilar_y_ejecutar(c, tmp)
 
     def test_receptor_descarta_trama_excesiva_entera_y_conserva_siguiente(self):
-        cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
-        if cc is None:
-            self.skipTest("compilador C no disponible; ejecutar esta prueba en WSL")
         raiz = Path(__file__).resolve().parents[1]
         fuente = (raiz / "capas/hw/misc/taller_puente.c").read_text(encoding="utf-8")
         # Compila el receptor REAL aislado de QOM/chardev. Solo las llamadas a
@@ -112,12 +138,7 @@ class PruebaArmado(unittest.TestCase):
             Path(tmp, "clasico_receptor.h").write_text(receptor_clasico, encoding="utf-8")
             Path(tmp, "c3_receptor.h").write_text(receptor_c3, encoding="utf-8")
             Path(tmp, "s3_receptor.h").write_text(receptor_s3, encoding="utf-8")
-            exe = Path(tmp) / "receptor"
-            subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror",
-                            "-Wno-unused-parameter", "-I", str(raiz / "capas/include"),
-                            "-I", tmp, str(raiz / "pruebas/armado_receptor.c"),
-                            "-o", str(exe)], check=True)
-            subprocess.run([str(exe)], check=True)
+            self.compilar_y_ejecutar(raiz / "pruebas/armado_receptor.c", tmp)
 
 
 if __name__ == "__main__":
