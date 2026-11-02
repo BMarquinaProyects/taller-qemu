@@ -120,4 +120,5 @@ config RISCV_ESP32C3
     select UNIMP
     select ESP_RGB
     select I2C
+    select OR_IRQ
 

@@ -23,6 +23,11 @@ def ejecutar_modelo(caso, nombre, carpeta="misc"):
     plantilla = (raiz / f"pruebas/c3_{nombre}_modelo.c").read_text(encoding="utf-8")
     codigo = plantilla.replace("/* CABECERA_REAL */", cab).replace(
         "/* MODELO_REAL */", codigo[inicio:fin] + reset)
+    compilar_ejecutar(codigo, cc)
+
+
+def compilar_ejecutar(codigo, cc):
+    """Compila y ejecuta una unidad C aislada, también desde MSVC nativo."""
     with tempfile.TemporaryDirectory() as tmp:
         c = Path(tmp) / "modelo.c"
         msvc = Path(cc).stem.lower() == "cl"

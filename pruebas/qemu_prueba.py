@@ -15,6 +15,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_analogico <c3_analogico_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_i2c <c3_i2c_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_rmt <c3_rmt_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_spi <c3_spi_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_gpio <s3_gpio_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_pwm <s3_pwm_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_analogico <s3_analogico_prueba.flash.bin>
@@ -1101,6 +1102,33 @@ def comprobar_tramas_c3(tramas: list, tipo_datos: int) -> list[str]:
     return errores
 
 
+def comprobar_c3_spi(tramas: list, texto: str) -> list[str]:
+    """Exige MOSI completo de SPI2: abcd, 40960 bytes y cuatro clocks RX."""
+    errores = comprobar_tramas_c3(tramas, 3)
+    lineas = ("C3-SPI-MISO=ffffffff", "TALLER-OK c3_spi")
+    posiciones = []
+    for linea in lineas:
+        coincidencias = list(re.finditer(r"^" + re.escape(linea) + r"\r?\n", texto, re.MULTILINE))
+        if len(coincidencias) != 1:
+            errores.append(f"sin línea única completa {linea}")
+        else:
+            posiciones.append(coincidencias[0].start())
+    if posiciones != sorted(posiciones) or "TALLER-FALLO" in texto:
+        errores.append("orden UART incorrecto o fallo del firmware")
+    datos = bytearray()
+    for tipo, _, _, carga in tramas:
+        if tipo != 3:
+            continue
+        if not 2 <= len(carga) <= 65535 or carga[0] != 2:
+            errores.append("trama SPI inválida o fuera del bus 2")
+        else:
+            datos.extend(carga[1:])
+    esperado = b"abcd" + bytes(range(256)) * 160 + b"\0" * 4
+    if datos != esperado:
+        errores.append(f"MOSI SPI2 distinto: {len(datos)} bytes, esperados {len(esperado)}")
+    return errores
+
+
 def comprobar_c3_i2c(tramas: list, texto: str) -> list[str]:
     """Espejo 0x3C:D0=AB, escritura 00 AF con ACK y dispositivo ausente con NACK."""
     errores = comprobar_tramas_c3(tramas, 5)
@@ -1212,6 +1240,41 @@ def comprobar_c3_rmt(tramas: list, texto: str) -> list[str]:
     return errores
 
 
+def c3_spi(qemu: str, firmware: str) -> int:
+    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_spi", "TALLER-FALLO"], 60)
+        if not texto.endswith("\n"):
+            texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
+        time.sleep(0.5)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_c3_spi(tramas, texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO c3_spi\n" + texto[-1000:] if errores else
+          "OK c3_spi: SPI2 bus 2, 40968 bytes MOSI exactos y MISO ffffffff")
+    return 1 if errores else 0
+
+
 def c3_rmt(qemu: str, firmware: str) -> int:
     tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
     tramas: list = []
@@ -1319,6 +1382,8 @@ if __name__ == "__main__":
         sys.exit(c3_i2c(qemu, sys.argv[3]))
     if modo == "c3_rmt":
         sys.exit(c3_rmt(qemu, sys.argv[3]))
+    if modo == "c3_spi":
+        sys.exit(c3_spi(qemu, sys.argv[3]))
     if modo == "humo":
         sys.exit(humo(qemu, sys.argv[3], sys.argv[4]))
     if modo == "entrada":

@@ -48,6 +48,8 @@
 #include "hw/timer/esp32c3_timg.h"
 #include "hw/timer/esp32c3_systimer.h"
 #include "hw/ssi/esp32c3_spi.h"
+#include "hw/ssi/esp32c3_spi2.h"
+#include "hw/or-irq.h"
 #include "hw/misc/esp32c3_rtc_cntl.h"
 #include "hw/misc/esp32c3_aes.h"
 #include "hw/misc/esp32c3_rsa.h"
@@ -98,6 +100,8 @@ struct Esp32C3MachineState {
     ESP32C3TimgState timg[2];
     ESP32C3SysTimerState systimer;
     ESP32C3SpiState spi1;
+    ESP32C3Spi2State spi2;
+    OrIRQState gdma_irq[ESP32C3_GDMA_CHANNEL_COUNT];
     ESP32C3RtcCntlState rtccntl;
     ESP32C3UsbJtagState jtag;
     ESPRgbState rgb;
@@ -457,6 +461,7 @@ static void esp32c3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
     object_initialize_child(OBJECT(machine), "spi1", &ms->spi1, TYPE_ESP32C3_SPI);
+    object_initialize_child(OBJECT(machine), "spi2", &ms->spi2, TYPE_ESP32C3_SPI2);
     object_initialize_child(OBJECT(machine), "rtccntl", &ms->rtccntl, TYPE_ESP32C3_RTC_CNTL);
     object_initialize_child(OBJECT(machine), "jtag", &ms->jtag, TYPE_ESP32C3_JTAG);
     object_initialize_child(OBJECT(machine), "rgb", &ms->rgb, TYPE_ESP_RGB);
@@ -557,9 +562,20 @@ static void esp32c3_machine_init(MachineState *machine)
                           qdev_get_gpio_in(intmatrix_dev, ETS_RMT_INTR_SOURCE));
     }
 
+    /* SPI2 de usuario: bus del puente independiente del SPI1 de la flash. */
+    ms->spi2.gdma = ESP_GDMA(&ms->gdma);
+    sysbus_realize(SYS_BUS_DEVICE(&ms->spi2), &error_fatal);
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_SPI2_BASE,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->spi2), 0), 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ms->spi2), 0,
+                      qdev_get_gpio_in(intmatrix_dev, ETS_SPI2_INTR_SOURCE));
+
     /* Taller: preparar el espejo antes de recibir altas y anunciar HOLA. */
     Chardev *puente = qemu_chr_find(TALLER_PUENTE_CHARDEV);
     if (puente) {
+        DeviceState *periferico = qdev_new(TYPE_TALLER_SPI);
+        qdev_prop_set_uint8(periferico, "bus", ESP32C3_SPI2_BUS);
+        qdev_realize_and_unref(periferico, BUS(ms->spi2.spi), &error_fatal);
         taller_i2c_preparar(ms->i2c.bus, 0);
         taller_puente_iniciar(puente, esp32c3_taller_recibir, ms);
     }
@@ -645,12 +661,20 @@ static void esp32c3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ms->gdma), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gdma), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GDMA_BASE, mr, 0);
-        /* On the ESP32-C3, both IN and OUT channels are connected to the same Connect the IRQs to the Interrupt Matrix */
+        /* IN y OUT comparten fuente. Un OR conserva el nivel de la otra
+         * dirección al limpiar una IRQ; dos salidas directas se pisan. */
         for (int i = 0; i < ESP32C3_GDMA_CHANNEL_COUNT; i++) {
+            char nombre[32];
+            snprintf(nombre, sizeof(nombre), "gdma-irq%d", i);
+            object_initialize_child(OBJECT(machine), nombre, &ms->gdma_irq[i], TYPE_OR_IRQ);
+            qdev_prop_set_uint16(DEVICE(&ms->gdma_irq[i]), "num-lines", 2);
+            qdev_realize(DEVICE(&ms->gdma_irq[i]), NULL, &error_fatal);
+            qdev_connect_gpio_out(DEVICE(&ms->gdma_irq[i]), 0,
+                                 qdev_get_gpio_in(intmatrix_dev, ETS_DMA_CH0_INTR_SOURCE + i));
             qdev_connect_gpio_out_named(DEVICE(&ms->gdma), ESP_GDMA_IRQ_IN_NAME, i,
-                                        qdev_get_gpio_in(intmatrix_dev, ETS_DMA_CH0_INTR_SOURCE + i));
+                                        qdev_get_gpio_in(DEVICE(&ms->gdma_irq[i]), 0));
             qdev_connect_gpio_out_named(DEVICE(&ms->gdma), ESP_GDMA_IRQ_OUT_NAME, i,
-                                        qdev_get_gpio_in(intmatrix_dev, ETS_DMA_CH0_INTR_SOURCE + i));
+                                        qdev_get_gpio_in(DEVICE(&ms->gdma_irq[i]), 1));
         }
 
     }

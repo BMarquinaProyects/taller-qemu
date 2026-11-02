@@ -32,7 +32,7 @@ Cambios de Taller (resumen):
 - Compilación y empaquetado de Xtensa y RISC-V32 mediante `construir.sh`, con
   reglas Meson para el GPIO y el puente C3. Prueba Arduino e imagen completa de
   flash de 4 MiB, modo `c3_gpio`, unitarias del modelo real y despacho de entradas.
-  IO_MUX, IRQ GPIO, RMT RX y SPI2 de usuario quedan pendientes;
+  IO_MUX, IRQ GPIO y RMT RX quedan pendientes;
   los controladores clásicos no se trasladan al C3.
 - LEDC del ESP32-C3 (`hw/misc/esp32c3_ledc.c` y cabecera): cuatro timers y seis
   canales LS que mandan PWM al GPIO de su señal; ADC1 del C3
@@ -54,6 +54,32 @@ Cambios de Taller (resumen):
   mínimos, también compilables con MSVC. `todas.sh` añade ambos modos C3.
   Este paso mantiene versión 0.9.0 y protocolo v7; compilación completa de
   QEMU y ejecución integrada quedan para la revisión en WSL.
+- SPI2/GPSPI2 del C3 (`hw/ssi/esp32c3_spi2.c` y cabecera), independiente del
+  SPI1 de flash: W0–W15, UPDATE/USR, MS_DLEN, fases de comando/dirección,
+  RAW R/W, ENA/ST/CLR y fin con IRQ. CPU y GDMA TX/RX sobre los canales
+  existentes de Espressif, descriptores SRAM C3 de 12 bytes, length/size,
+  CHECK_OWNER, OUT_AUTO_WRBACK, EOF, errores y detección de ciclos.
+  TX parcial no devuelve OWNER ni genera OUT_DONE/EOF anticipados; los
+  finales RAW se conservan hasta CLR o escritura explícita, incluso entre modos.
+  MISO FF; `taller.spi` y `taller_puente_spi_fin` emiten en **bus 2** con el
+  mismo protocolo v7 y troceo del clásico. Conectado en `hw/riscv/esp32c3.c`
+  y Meson, sin trasladar el SPI clásico ni modificar el SPI1 de flash.
+- Correcciones de traducción GDMA C3 (`hw/dma/esp32c3_gdma.c`): IRQ por
+  canal con stride 0x10, cinco eventos IN y cuatro OUT, STOP/reset.
+  OR de IRQ IN/OUT por canal en la máquina; Kconfig selecciona OR_IRQ.
+  SPI2 requiere selección de periférico y START; accede al AddressSpace DRAM
+  con direcciones absolutas (como el motor GDMA de Espressif). El motor GDMA genérico y la matriz IRQ C3
+  permanecen como en Espressif; se conserva el recálculo al reasignar.
+- Prueba Arduino `c3_spi`, imagen fusionada de 4 MiB, modo en
+  `qemu_prueba.py` y llamada en `todas.sh`. Patrón MOSI exacto de 40968 bytes
+  en bus 2, Arduino CPU y spi_master con GDMA e ISR; MISO ffffffff.
+  Verificador puro y modelos reales SPI2/GDMA/emisor aislados compilables
+  con GCC/Clang o MSVC; regresiones de rangos SRAM, OWNER, RX/TX parciales
+  y segmento pendiente. 101 unitarias pasan en WSL sin omisiones, y se
+  compilan aisladamente SPI2, GDMA y máquina C3 con cabeceras reales y -Werror.
+  Sin temporización eléctrica, PSRAM, esclavo,
+  cadenas circulares/restart ni buffers SCT; probado en QEMU con `c3_spi`
+  (21 modos de `todas.sh`). Versión 0.12.0, puente v7.
 - Puente v7 (`hw/misc/taller_puente.c`): latido TIEMPO cada 10 ms virtuales con un
   temporizador de `QEMU_CLOCK_VIRTUAL` y cadencia fija. Versión 0.8.1.
 - GPIO propio del ESP32-S3 (`hw/gpio/esp32s3_gpio.c` y cabecera), basado en
