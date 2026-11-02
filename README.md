@@ -436,6 +436,23 @@ Imagen S3 DIO de 4 MiB compilada y verificada. En la revisión (v0.14.0) se comp
 `s3_spi` incluido (40 968 bytes MOSI exactos por el bus 2 y MISO `ffffffff`), y 137 unitarias.
 Detalle en [`docs/esp32s3-spi.md`](docs/esp32s3-spi.md).
 
+### Flash del S3 en QIO y MicroPython (v0.15.0)
+
+QEMU elige el chip de flash del S3 por el tamaño de la imagen: 4 MiB `gd25q32`, 8 MiB `gd25q64` y
+16 MiB `is25lp128`. Solo el ISSI acepta activar QIO (los GigaDevice responden «qio_mode: Failed to
+set QIE bit» y IDF sigue en DIO). En QIO, IDF lee con `0xEB` y 6 ciclos dummy (bits de modo incluidos),
+que con 4 bits por ciclo son 3 bytes, justo lo que espera `m25p80` para el ISSI. La copia de
+Espressif de `esp32s3_spi.c` los convertía como si fueran de una línea (1 byte), y cada lectura
+salía desplazada 2 bytes. Ahora `esp32s3_spi_get_dummy` multiplica por las líneas del modo
+(`FREAD_QIO` ×4, `FREAD_DIO` ×2).
+
+Con eso, el MicroPython oficial `ESP32_GENERIC_S3` v1.29.0 (compilado en QIO) arranca y llega al
+REPL con la imagen rellena con `0xFF` hasta **16 MiB**: «Performing initial setup» formatea su
+sistema de archivos. Con 4 u 8 MiB no: el chip GigaDevice no acepta QIO, y la cabecera de 4 MB
+impide registrar la partición `vfs` en una flash de 8 MiB. La prueba `s3_flash_qio` (sketch
+Arduino en QIO; el arnés rellena la imagen hasta 16 MiB) comprueba que borrar, escribir y leer
+no tenga desfase.
+
 ## Protocolo del puente (v7)
 
 Con `-chardev socket,id=taller-puente,host=127.0.0.1,port=<p>,server=on,wait=on`, QEMU envía tramas

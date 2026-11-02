@@ -144,3 +144,7 @@ Cambios de Taller (resumen):
   y límites en `docs/esp32s3-spi.md`. Sin temporización eléctrica, SPI3,
   orden de bits en hilo, octal/DTR, esclavo, PSRAM DMA, circular ni SCT.
   Versión 0.14.0, protocolo v7. 23 modos de `todas.sh` en Linux, `s3_spi` incluido.
+- SPI1 (flash) del S3 (`hw/ssi/esp32s3_spi.c`), v0.15.0: en las lecturas «I/O» los ciclos
+  dummy llevan 2 (DIO) o 4 (QIO) bits por ciclo; `m25p80` los cuenta en bytes. La copia de
+  Espressif los convertía como de una sola línea y, en QIO con el IS25LP128 (flash de 16 MiB),
+  cada lectura salía desplazada 2 bytes. Prueba `s3_flash_qio` y `s3_flash_qio_unitarias.py`.

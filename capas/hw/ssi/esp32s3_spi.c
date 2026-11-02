@@ -2,6 +2,7 @@
  * ESP32 SPI controller
  *
  * Copyright (c) 2019 Espressif Systems (Shanghai) Co. Ltd.
+ * Copyright (c) 2026 Taller (ciclos dummy en lecturas DIO/QIO).
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 or
@@ -214,16 +215,20 @@ static inline void esp32s3_spi_get_dummy(ESP32S3SpiState *s, uint32_t* len)
 {
     const uint32_t dummy_count = FIELD_EX32(s->mem_user1, SPI_MEM_USER1, USR_DUMMY_CYCLELEN);
 
-    /* Dummy cycles are interpreted as bytes by the emulated SPI Flash. As such, we shall convert
-     * our dummy cycles count in bytes, rounding it up. For example:
-     * 0 cycles = 0 byte
-     * 1 cycle = 1 byte
-     * ...
-     * 8 cycles = 1 byte
-     * 9 cycles = 2 bytes
-     * etc..
-     */
-    *len = (dummy_count + 7) / 8;
+    /* Taller: m25p80 cuenta los ciclos dummy en bytes transferidos. USR_DUMMY_CYCLELEN vale ciclos - 1,
+     * y en las lecturas «I/O» cada ciclo lleva varios bits: 2 en DIO (0xBB) y 4 en QIO (0xEB). Con
+     * QIO, IDF programa 6 ciclos (bits de modo incluidos) = 3 bytes, que es lo que espera m25p80 para
+     * el IS25LP128. Convertirlos como si fueran de una línea daba 1 byte y desplazaba 2 bytes cada
+     * lectura (MicroPython del S3: «The filesystem appears to be corrupted»).
+     * Con una sola línea se conserva el cálculo original de Espressif. */
+    const uint32_t ciclos = dummy_count + 1;
+    uint32_t lineas = 1;
+    if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_QIO)) {
+        lineas = 4;
+    } else if (FIELD_EX32(s->mem_ctrl, SPI_MEM_CTRL, FREAD_DIO)) {
+        lineas = 2;
+    }
+    *len = lineas == 1 ? (dummy_count + 7) / 8 : (ciclos * lineas + 7) / 8;
 }
 
 static void esp32s3_spi_begin_transaction(ESP32S3SpiState *s)

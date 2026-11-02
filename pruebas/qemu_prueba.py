@@ -107,14 +107,20 @@ def lanzar(qemu: str, firmware: str, con_puente: bool):
     return tmp, proc, p_uart, p_puente
 
 
-def lanzar_soc(qemu: str, firmware: str, chip: str):
-    """C3/S3: copia privada de flash de 4 MiB, bootloader en 0x0 y UART0."""
+def lanzar_soc(qemu: str, firmware: str, chip: str, flash_mib: int = 4):
+    """C3/S3: copia privada de flash de 4 MiB, bootloader en 0x0 y UART0.
+
+    Con `flash_mib` mayor, la copia se rellena con 0xFF (flash borrada) hasta ese tamaño: QEMU elige el
+    chip por el tamaño (16 MiB: IS25LP128, el único que acepta QIO)."""
     tmp = tempfile.TemporaryDirectory()
     try:
         imagen = Path(tmp.name) / f"{chip}.flash.bin"
         shutil.copyfile(firmware, imagen)
         if imagen.stat().st_size != 4 * 1024 * 1024:
             raise ValueError(f"{chip.upper()} requiere una flash completa de 4 MiB")
+        if flash_mib > 4:
+            with open(imagen, "ab") as f:
+                f.write(b"\xff" * ((flash_mib - 4) * 1024 * 1024))
         p_uart, p_puente = puerto_libre(), puerto_libre()
         cmd = [qemu, "-machine", f"esp32{chip}", "-display", "none", "-monitor", "none",
                "-drive", f"file={imagen},if=mtd,format=raw",
@@ -1367,6 +1373,48 @@ def c3_rmt(qemu: str, firmware: str) -> int:
 def s3_rmt(qemu: str, firmware: str) -> int:
     return rmt_soc(qemu, firmware, "s3")
 
+
+def comprobar_s3_flash_qio(texto: str) -> list[str]:
+    """Borrar, escribir y leer 16 bytes con QIO en el IS25LP128 (16 MiB), sin desfase."""
+    errores = []
+    for linea in ("BORRADO err=0 primeros=ff ff ff ff", "ESCRITO err=0 primeros=a0 a1 a2 a3 igual=1",
+                  "TAMANO=4194304 FISICO=16777216 ID=9d6018", "TALLER-OK flash"):
+        if len(re.findall(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE)) != 1:
+            errores.append(f"sin línea única {linea}")
+    if "qio_mode: Failed" in texto:
+        errores.append("no se activó el modo QIO")
+    if "Guru Meditation" in texto or "TALLER-FALLO" in texto:
+        errores.append("el firmware falló")
+    return errores
+
+
+def s3_flash_qio(qemu: str, firmware: str) -> int:
+    """Regresión: en QIO, los ciclos dummy de 0xEB llevan 4 bits por ciclo (antes, 2 bytes de desfase)."""
+    tmp, proc, p_uart, p_puente = lanzar_soc(qemu, firmware, "s3", flash_mib=16)
+    s_uart = s_puente = None
+    texto = ""
+    try:
+        s_puente = conectar(p_puente, proc)
+        s_uart = conectar(p_uart, proc)
+        texto = leer_uart_hasta(s_uart, ["TALLER-OK flash", "TALLER-FALLO"], 60)
+        if not texto.endswith("\n"):
+            texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
+    finally:
+        proc.kill()
+        proc.wait()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_s3_flash_qio(texto)
+    for error in errores:
+        print("FALLO", error)
+    print("FALLO s3_flash_qio\n" + texto[-1500:] if errores else
+          "OK s3_flash_qio: IS25LP128 en QIO, borrar/escribir/leer sin desfase")
+    return 1 if errores else 0
+
 # Los GPIO físicos S3 dejan un hueco en los índices 22..25.
 MASCARA_S3 = 0x1fffffc3fffff
 
@@ -1429,7 +1477,7 @@ def s3_analogico(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
-    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi"):
+    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi", "s3_flash_qio"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo == "c3_gpio":
         sys.exit(c3_gpio(qemu, sys.argv[3]))
