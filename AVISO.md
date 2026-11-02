@@ -27,8 +27,8 @@ Cambios de Taller (resumen):
   `0x554 + 4·n` y trenes armados reutilizados (`hw/gpio/esp32c3_gpio.c` y cabecera).
 - Máquina C3 conectada al chardev `taller-puente` (`hw/riscv/esp32c3.c`).
   El parser común entrega cargas a un receptor por máquina; el clásico conserva
-  GPIO/ADC1/I2C y el C3 recibe GPIO, armados, ADC1 e I2C0. No se modifica la matriz IRQ C3:
-  el modelo base ya conserva niveles, aplica OR y recalcula al reasignar.
+  GPIO/ADC1/I2C y el C3 recibe GPIO, armados, ADC1 e I2C0. La matriz IRQ C3 base ya
+  conserva niveles, aplica OR y recalcula al reasignar (ver abajo el arreglo de v0.12.1).
 - Compilación y empaquetado de Xtensa y RISC-V32 mediante `construir.sh`, con
   reglas Meson para el GPIO y el puente C3. Prueba Arduino e imagen completa de
   flash de 4 MiB, modo `c3_gpio`, unitarias del modelo real y despacho de entradas.
@@ -68,8 +68,8 @@ Cambios de Taller (resumen):
   canal con stride 0x10, cinco eventos IN y cuatro OUT, STOP/reset.
   OR de IRQ IN/OUT por canal en la máquina; Kconfig selecciona OR_IRQ.
   SPI2 requiere selección de periférico y START; accede al AddressSpace DRAM
-  con direcciones absolutas (como el motor GDMA de Espressif). El motor GDMA genérico y la matriz IRQ C3
-  permanecen como en Espressif; se conserva el recálculo al reasignar.
+  con direcciones absolutas (como el motor GDMA de Espressif). El motor GDMA genérico
+  permanece como en Espressif; se conserva el recálculo al reasignar.
 - Prueba Arduino `c3_spi`, imagen fusionada de 4 MiB, modo en
   `qemu_prueba.py` y llamada en `todas.sh`. Patrón MOSI exacto de 40968 bytes
   en bus 2, Arduino CPU y spi_master con GDMA e ISR; MISO ffffffff.
@@ -98,3 +98,8 @@ Cambios de Taller (resumen):
   con C3 y pruebas aisladas de modelos, receptor y sockets. GPIO del clásico
   mantiene su límite de 40 índices y C3 el de 22. IO_MUX, IRQ GPIO, I2C, RMT
   y SPI de usuario del S3 siguen pendientes. No cambia VERSION ni el protocolo.
+- Matriz de interrupciones del C3 (`hw/riscv/esp32c3_intmatrix.c`), v0.12.1: `BIT()`
+  pasa a `BIT_ULL()`. `BIT(n)` es `1UL << n` y en Windows `long` tiene 32 bits, así que
+  las fuentes 32..61 pisaban a las 0..29: el I2C0 (29) activaba también
+  CACHE_CORE0_ACS (61) y el firmware caía en «Cache error». Prueba aislada en
+  `pruebas/c3_intmatrix_unitarias.py`.

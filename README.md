@@ -88,8 +88,8 @@ OUT_DONE/EOF antes de consumir todos sus bytes.
 Los enlaces consumidos no se reutilizan sin otro START. Se corrigen stride
 de IRQ C3 (0x10 por canal), traducción de sus cinco eventos IN/cuatro OUT
 y pulsos STOP/reset. IN/OUT se unen con OR antes de la fuente compartida.
-No se modifica el motor genérico GDMA ni la matriz IRQ: esta ya recalcula
-el nivel al reasignar (E-039). RAW y ENA de SPI también recalculan el nivel,
+No se modifica el motor genérico GDMA. La matriz IRQ ya recalcula el nivel
+al reasignar (E-039); desde v0.12.1 usa `BIT_ULL()` (ver «Matriz de interrupciones»). RAW y ENA de SPI también recalculan el nivel,
 incluido el fin que IDF escribe antes de arrancar su primera ISR.
 Los eventos RAW de fin normal y fin de segmento se acumulan hasta CLR o
 escritura explícita de RAW; iniciar otra operación no descarta una IRQ pendiente.
@@ -587,6 +587,15 @@ nivel de la última fuente que cambiaba y no miraba los niveles al reasignar. Pe
 desactiva las interrupciones cambiando su asignación (`esp_intr_enable`/`disable`), y el driver
 SPI deja `trans_done` alto antes de activarla para que su ISR entre en cuanto se active: con el
 original, `machine.SPI` de MicroPython se quedaba esperando para siempre.
+
+En el **C3** (`hw/riscv/esp32c3_intmatrix.c`, v0.12.1) el modelo de Espressif guarda los
+niveles de sus 62 fuentes en un `uint64_t`, pero los consulta con `BIT(n)`, que es
+`1UL << n`. En Windows `long` tiene 32 bits: para n ≥ 32 el desplazamiento es indefinido
+y x86 lo cuenta módulo 32, así que la fuente n pisaba a la n − 32. Con el I2C0 (29)
+activo, la matriz daba también por activa CACHE_CORE0_ACS (61), que IDF enruta a la
+interrupción 25 de error de caché: `Guru Meditation Error … (Cache error)` y reinicio en
+bucle, solo en Windows. Ahora usa `BIT_ULL()`; `pruebas/c3_intmatrix_unitarias.py`
+compila la función real con un `BIT()` que imita a Windows y exige que no se pisen.
 
 ## GPIO de drenador abierto
 

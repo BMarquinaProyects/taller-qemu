@@ -2,6 +2,12 @@
  * ESP32-C3 Interrupt Matrix
  *
  * Copyright (c) 2023 Espressif Systems (Shanghai) Co. Ltd.
+ * Copyright (c) 2026 Taller.
+ *
+ * Taller: BIT() es (1UL << n) y en Windows (LLP64) `long` tiene 32 bits, así que
+ * con las 62 fuentes del C3 BIT(n) para n >= 32 pisaba la fuente n - 32: el
+ * I2C0 (29) activaba también CACHE_CORE0_ACS (61), que IDF enruta al error de
+ * caché, y el firmware entraba en pánico «Cache error». Aquí todo es BIT_ULL().
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 or
@@ -25,9 +31,9 @@
 #define INTMATRIX_DEBUG     0
 #define INTMATRIX_WARNING   0
 
-#define BIT_SET(reg, bit)   ((reg) & BIT(bit))
-#define CLEAR_BIT(reg, bit) do { (reg) &= ~BIT(bit); } while(0)
-#define SET_BIT(reg, bit)   do { (reg) |= BIT(bit); } while(0)
+#define BIT_SET(reg, bit)   ((reg) & BIT_ULL(bit))
+#define CLEAR_BIT(reg, bit) do { (reg) &= ~BIT_ULL(bit); } while(0)
+#define SET_BIT(reg, bit)   do { (reg) |= BIT_ULL(bit); } while(0)
 
 
 static int esp32c3_get_output_line_level(ESP32C3IntMatrixState *s, int line)
@@ -36,7 +42,7 @@ static int esp32c3_get_output_line_level(ESP32C3IntMatrixState *s, int line)
 
     for (int i = 0; level_shared == 0 && i < ESP32C3_INT_MATRIX_INPUTS; i++) {
         const uint_fast8_t mapped = s->irq_map[i];
-        if (mapped == line && (s->irq_levels & BIT(i)))
+        if (mapped == line && (s->irq_levels & BIT_ULL(i)))
         {
             level_shared |= 1;
         }
@@ -193,8 +199,8 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
         /* Check which interrupt/bit changed
          * Interrupts starts at 1, so we need to count up to ESP32C3_CPU_INT_COUNT */
         for (int i = 0; i <= ESP32C3_CPU_INT_COUNT; i++) {
-            const int new_st = value & BIT(i);
-            const int old_st = prev  & BIT(i);
+            const int new_st = value & BIT_ULL(i);
+            const int old_st = prev  & BIT_ULL(i);
             if (new_st != old_st) {
                 esp32c3_intmatrix_update_line(s, i);
             }
@@ -236,7 +242,7 @@ static void esp32c3_intmatrix_reset_hold(Object *obj, ResetType type)
     }
 
     /* Force the CPU to allow all interrupts */
-    riscv_csr_write(&cpu->env, CSR_MIE, BIT(12) - 1);
+    riscv_csr_write(&cpu->env, CSR_MIE, BIT_ULL(12) - 1);
 }
 
 
