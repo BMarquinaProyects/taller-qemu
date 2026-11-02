@@ -1,4 +1,4 @@
-/* Maestro I2C0 C3: bus QEMU normal, FIFO APB y comandos del HAL IDF 5.5.
+/* Maestro I2C0 C3/S3: bus QEMU normal, FIFO APB y comandos del HAL IDF 5.5.
  * Registros contrastados con soc/i2c_reg.h y hal/i2c_ll.h Arduino 3.3.12.
  * GPL-2.0-or-later. Sin modo esclavo, DMA, temporización ni señales GPIO.
  */

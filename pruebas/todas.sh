@@ -30,4 +30,6 @@ python3 pruebas/qemu_prueba.py "$Q_C3" c3_spi pruebas/c3_spi_prueba.flash.bin ||
 python3 pruebas/qemu_prueba.py "$Q" s3_gpio pruebas/s3_gpio_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" s3_pwm pruebas/s3_pwm_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" s3_analogico pruebas/s3_analogico_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q" s3_i2c pruebas/s3_i2c_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q" s3_rmt pruebas/s3_rmt_prueba.flash.bin || r=1
 exit $r

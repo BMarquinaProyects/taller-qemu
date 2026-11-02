@@ -1,5 +1,5 @@
 /*
- * SoC y máquina ESP32-S3; capas de Taller para GPIO, LEDC y ADC1 SENS.
+ * SoC y máquina ESP32-S3; capas de Taller para GPIO, LEDC, ADC1, I2C0 y RMT TX.
  *
  * Copyright (c) 2023-2024 Espressif Systems (Shanghai) Co. Ltd.
  * Copyright (c) 2026 Taller.
@@ -23,6 +23,8 @@
 #include "hw/misc/unimp.h"
 #include "hw/irq.h"
 #include "hw/i2c/i2c.h"
+#include "hw/i2c/esp32c3_i2c.h"
+#include "hw/i2c/taller_i2c.h"
 #include "hw/qdev-properties.h"
 
 #include "qemu/osdep.h"
@@ -63,6 +65,7 @@
 #include "hw/timer/esp32s3_systimer.h"
 #include "hw/gpio/esp32s3_gpio.h"
 #include "hw/misc/esp32c3_ledc.h"
+#include "hw/misc/esp32c3_rmt.h"
 #include "hw/misc/esp32s3_saradc.h"
 #include "hw/misc/taller_puente.h"
 #include "hw/misc/esp32s3_xts_aes.h"
@@ -128,6 +131,8 @@ typedef struct Esp32s3SocState {
     ESP32S3UARTState uart[ESP32S3_UART_COUNT];
     ESP32S3GPIOState gpio;
     ESP32C3LEDCState ledc;
+    ESP32C3I2CState i2c;
+    ESP32C3RMTState rmt;
     ESP32S3SarAdcState saradc;
     Esp32s3RngState rng;
     Esp32S3TWAIState twai;
@@ -606,7 +611,7 @@ static void esp32s3_soc_add_unimp_device(MemoryRegion *dest, const char* name, h
     g_free(name_apb);
 }
 
-/* Receptor S3: entradas digitales, trenes y valores crudos ADC1 GPIO1..10. */
+/* Receptor S3: entradas, trenes, ADC1 GPIO1..10 y espejo I2C del bus 0. */
 static void esp32s3_taller_recibir(void *opaque, uint8_t tipo,
                                   const uint8_t *datos, size_t largo)
 {
@@ -616,6 +621,10 @@ static void esp32s3_taller_recibir(void *opaque, uint8_t tipo,
         esp32s3_gpio_fijar_entrada(&ss->gpio, datos[0], datos[1] != 0);
     } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
         esp32s3_saradc_fijar_valor(&ss->saradc, datos[0], lduw_le_p(datos + 1));
+    } else if (tipo == TALLER_TRAMA_I2C_DISPOSITIVO && largo >= 3 && datos[0] == 0) {
+        taller_i2c_dispositivo(0, datos[1], datos[2] != 0);
+    } else if (tipo == TALLER_TRAMA_I2C_REGISTROS && largo >= 3 && datos[0] == 0) {
+        taller_i2c_registros(0, datos[1], datos[2], datos + 3, largo - 3);
     } else if (tipo == TALLER_TRAMA_ENTRADA_ARMADA) {
         esp32s3_gpio_armar_entrada(&ss->gpio, datos, largo);
     }
@@ -662,6 +671,8 @@ static void esp32s3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(ss), "jtag", &ss->jtag, TYPE_ESP32C3_JTAG);
     object_initialize_child(OBJECT(ss), "gpio", &ss->gpio, TYPE_ESP32S3_GPIO);
     object_initialize_child(OBJECT(ss), "ledc", &ss->ledc, TYPE_ESP32C3_LEDC);
+    object_initialize_child(OBJECT(ss), "i2c0", &ss->i2c, TYPE_ESP32C3_I2C);
+    object_initialize_child(OBJECT(ss), "rmt", &ss->rmt, TYPE_ESP32C3_RMT);
     object_initialize_child(OBJECT(ss), "saradc", &ss->saradc, TYPE_ESP32S3_SARADC);
     object_initialize_child(OBJECT(ss), "rng", &ss->rng, TYPE_ESP32S3_RNG);
 
@@ -814,9 +825,28 @@ static void esp32s3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SENS_BASE, mr, 0);
     }
 
+    /* IP I2C de la misma generación C3: mismos offsets, FIFO y comandos. */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ss->i2c), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->i2c), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ss->i2c), 0,
+                          qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
+
+        ss->rmt.gpio = &ss->gpio;
+        ss->rmt.pin_de_senal = esp32s3_gpio_pin_de_senal;
+        qdev_prop_set_bit(DEVICE(&ss->rmt), "s3", true);
+        sysbus_realize(SYS_BUS_DEVICE(&ss->rmt), &error_fatal);
+        mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->rmt), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_RMT_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ss->rmt), 0,
+                          qdev_get_gpio_in(intmatrix_dev, ETS_RMT_INTR_SOURCE));
+    }
+
     /* Habilitar el puente cuando todos sus receptores ya existen. */
     Chardev *puente = qemu_chr_find(TALLER_PUENTE_CHARDEV);
     if (puente) {
+        taller_i2c_preparar(ss->i2c.bus, 0);
         taller_puente_iniciar(puente, esp32s3_taller_recibir, ss);
     }
 
@@ -915,7 +945,6 @@ static void esp32s3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, esp32s3_memmap[ESP32S3_MEMREGION_FRAMEBUF].base, &ss->rgb.vram, 0);
     }
 
-    esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.rmt", DR_REG_RMT_BASE, 0x1000);
     esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.iomux", DR_REG_IO_MUX_BASE, 0x2000);
 
     

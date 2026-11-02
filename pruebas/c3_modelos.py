@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 
-def ejecutar_modelo(caso, nombre, carpeta="misc"):
+def ejecutar_modelo(caso, nombre, carpeta="misc", s3=False):
     cc = (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang") or
           shutil.which("cl"))
     if cc is None:
@@ -23,6 +23,8 @@ def ejecutar_modelo(caso, nombre, carpeta="misc"):
     plantilla = (raiz / f"pruebas/c3_{nombre}_modelo.c").read_text(encoding="utf-8")
     codigo = plantilla.replace("/* CABECERA_REAL */", cab).replace(
         "/* MODELO_REAL */", codigo[inicio:fin] + reset)
+    if s3:
+        codigo = "#define MODELO_S3 1\n" + codigo
     compilar_ejecutar(codigo, cc)
 
 

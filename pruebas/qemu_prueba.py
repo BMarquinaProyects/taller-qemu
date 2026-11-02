@@ -19,6 +19,8 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_gpio <s3_gpio_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_pwm <s3_pwm_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_analogico <s3_analogico_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_i2c <s3_i2c_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_rmt <s3_rmt_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -1077,14 +1079,15 @@ def analogico_soc(qemu: str, firmware: str, chip: str, pin: int) -> int:
     return 1 if errores else 0
 
 
-def comprobar_tramas_c3(tramas: list, tipo_datos: int) -> list[str]:
-    """Valida el sobre v7, los latidos y los GPIO auxiliares de las pruebas C3."""
+def comprobar_tramas_periferico_soc(tramas: list, tipo_datos: int, chip: str) -> list[str]:
+    """Valida el sobre v7, los latidos y los GPIO auxiliares de las pruebas C3/S3."""
     errores = []
+    mascara = (1 << 22) - 1 if chip == "c3" else MASCARA_S3
     if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
         errores.append(f"sin HOLA v{VERSION_PUENTE}")
     for indice, (tipo, version, _, carga) in enumerate(tramas):
         if version != VERSION_PUENTE or tipo not in (1, 2, TIPO_TIEMPO, tipo_datos):
-            errores.append(f"trama C3 inválida: tipo {tipo}, versión {version}")
+            errores.append(f"trama {chip.upper()} inválida: tipo {tipo}, versión {version}")
         if tipo == 1 and (indice != 0 or not es_hola(tramas[indice], VERSION_PUENTE)):
             errores.append("HOLA repetido o inválido")
         if tipo == TIPO_TIEMPO and carga:
@@ -1092,14 +1095,18 @@ def comprobar_tramas_c3(tramas: list, tipo_datos: int) -> list[str]:
         if tipo == 2:
             if len(carga) != 16:
                 errores.append("trama GPIO con longitud distinta de 16")
-            elif any(mascara >> 22 for mascara in struct.unpack("<QQ", carga)):
-                errores.append("GPIO C3 fuera de 0..21")
+            elif any(valor & ~mascara for valor in struct.unpack("<QQ", carga)):
+                errores.append(f"GPIO {chip.upper()} fuera de su máscara física")
     # RMT se emite al terminar, pero lleva el instante de inicio del tren. Puede
     # aparecer después de un latido más reciente; sus tiempos se validan aparte.
     tiempos = [t for tipo, _, t, _ in tramas if tipo_datos != 7 or tipo != 7]
     if tiempos != sorted(tiempos):
         errores.append("t_ns decreciente")
     return errores
+
+
+def comprobar_tramas_c3(tramas: list, tipo_datos: int) -> list[str]:
+    return comprobar_tramas_periferico_soc(tramas, tipo_datos, "c3")
 
 
 def comprobar_c3_spi(tramas: list, texto: str) -> list[str]:
@@ -1129,12 +1136,13 @@ def comprobar_c3_spi(tramas: list, texto: str) -> list[str]:
     return errores
 
 
-def comprobar_c3_i2c(tramas: list, texto: str) -> list[str]:
+def comprobar_i2c_soc(tramas: list, texto: str, chip: str) -> list[str]:
     """Espejo 0x3C:D0=AB, escritura 00 AF con ACK y dispositivo ausente con NACK."""
-    errores = comprobar_tramas_c3(tramas, 5)
-    esperadas = ["C3-I2C-ID=AB", "C3-I2C-ACK=0", "C3-I2C-NACK=2", "TALLER-OK c3_i2c"]
+    errores = comprobar_tramas_periferico_soc(tramas, 5, chip)
+    esperadas = [f"{chip.upper()}-I2C-ID=AB", f"{chip.upper()}-I2C-ACK=0",
+                 f"{chip.upper()}-I2C-NACK=2", f"TALLER-OK {chip}_i2c"]
     observadas = [linea for linea in texto.splitlines()
-                  if "C3-I2C-" in linea or "TALLER-OK c3_i2c" in linea]
+                  if f"{chip.upper()}-I2C-" in linea or f"TALLER-OK {chip}_i2c" in linea]
     if (observadas != esperadas or any(not linea_unica(texto, linea) for linea in esperadas)
             or "TALLER-FALLO" in texto):
         errores.append(f"UART I2C incompleta, duplicada o fuera de orden: {observadas}")
@@ -1150,9 +1158,17 @@ def comprobar_c3_i2c(tramas: list, texto: str) -> list[str]:
     return errores
 
 
-def c3_i2c(qemu: str, firmware: str) -> int:
-    """Configura el espejo antes de que el sketch C3 lea el identificador."""
-    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+def comprobar_c3_i2c(tramas: list, texto: str) -> list[str]:
+    return comprobar_i2c_soc(tramas, texto, "c3")
+
+
+def comprobar_s3_i2c(tramas: list, texto: str) -> list[str]:
+    return comprobar_i2c_soc(tramas, texto, "s3")
+
+
+def i2c_soc(qemu: str, firmware: str, chip: str) -> int:
+    """Configura el espejo antes de que el sketch C3/S3 lea el identificador."""
+    tmp, proc, p_uart, p_puente = (lanzar_c3 if chip == "c3" else lanzar_s3)(qemu, firmware)
     tramas: list = []
     parar = threading.Event()
     hilo = s_uart = s_puente = None
@@ -1168,7 +1184,7 @@ def c3_i2c(qemu: str, firmware: str) -> int:
         if tramas and es_hola(tramas[0], VERSION_PUENTE):
             s_puente.sendall(trama_i2c_dispositivo(0, 0x3c, True) +
                              trama_i2c_registros(0, 0x3c, 0xd0, b"\xab"))
-            texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_i2c", "TALLER-FALLO"], 60)
+            texto = leer_uart_hasta(s_uart, [f"TALLER-OK {chip}_i2c", "TALLER-FALLO"], 60)
             if not texto.endswith("\n"):
                 texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
             time.sleep(0.5)
@@ -1184,21 +1200,29 @@ def c3_i2c(qemu: str, firmware: str) -> int:
         if proc.stdout is not None:
             proc.stdout.close()
         tmp.cleanup()
-    errores = comprobar_c3_i2c(tramas, texto)
+    errores = comprobar_i2c_soc(tramas, texto, chip)
     for error in errores:
         print("FALLO", error)
-    print("FALLO c3_i2c\n" + texto[-1000:] if errores else
-          "OK c3_i2c: espejo 0x3C:D0=AB; escritura 00 AF con ACK; ausente con NACK")
+    print(f"FALLO {chip}_i2c\n" + texto[-1000:] if errores else
+          f"OK {chip}_i2c: espejo 0x3C:D0=AB; escritura 00 AF con ACK; ausente con NACK")
     return 1 if errores else 0
 
 
-def comprobar_c3_rmt(tramas: list, texto: str) -> list[str]:
-    """Dos trenes WS2812 completos en GPIO8: ocho LED y treinta mediante ping-pong."""
-    errores = comprobar_tramas_c3(tramas, 7)
-    marcas = [linea for linea in texto.splitlines() if "TALLER-OK c3_rmt" in linea]
-    if (marcas != ["TALLER-OK c3_rmt"] or not linea_unica(texto, "TALLER-OK c3_rmt")
+def c3_i2c(qemu: str, firmware: str) -> int:
+    return i2c_soc(qemu, firmware, "c3")
+
+
+def s3_i2c(qemu: str, firmware: str) -> int:
+    return i2c_soc(qemu, firmware, "s3")
+
+
+def comprobar_rmt_soc(tramas: list, texto: str, chip: str) -> list[str]:
+    """Ocho y treinta LED por ping-pong: GPIO8 en C3, GPIO10 en S3."""
+    errores = comprobar_tramas_periferico_soc(tramas, 7, chip)
+    marcas = [linea for linea in texto.splitlines() if f"TALLER-OK {chip}_rmt" in linea]
+    if (marcas != [f"TALLER-OK {chip}_rmt"] or not linea_unica(texto, f"TALLER-OK {chip}_rmt")
             or "TALLER-FALLO" in texto):
-        errores.append("sin línea única TALLER-OK c3_rmt o fallo del firmware")
+        errores.append(f"sin línea única TALLER-OK {chip}_rmt o fallo del firmware")
     trenes = []
     anterior = None
     for tipo, _, t_ns, carga in tramas:
@@ -1209,8 +1233,9 @@ def comprobar_c3_rmt(tramas: list, texto: str) -> list[str]:
             anterior = None
             continue
         canal, gpio, tick_ps = struct.unpack_from("<BBI", carga)
-        if canal not in (0, 1) or gpio != 8 or tick_ps != 100000:
-            errores.append(f"RMT C3: canal={canal}, gpio={gpio}, tick_ps={tick_ps}")
+        if (canal not in range(2 if chip == "c3" else 4) or
+                gpio != (8 if chip == "c3" else 10) or tick_ps != 100000):
+            errores.append(f"RMT {chip.upper()}: canal={canal}, gpio={gpio}, tick_ps={tick_ps}")
         clave = (t_ns, canal, gpio, tick_ps)
         simbolos = list(struct.unpack_from(f"<{(len(carga) - 6) // 4}I", carga, 6))
         # El emisor del puente conserva el inicio de TX al trocear un tren largo.
@@ -1238,6 +1263,14 @@ def comprobar_c3_rmt(tramas: list, texto: str) -> list[str]:
         except ValueError as error:
             errores.append(str(error))
     return errores
+
+
+def comprobar_c3_rmt(tramas: list, texto: str) -> list[str]:
+    return comprobar_rmt_soc(tramas, texto, "c3")
+
+
+def comprobar_s3_rmt(tramas: list, texto: str) -> list[str]:
+    return comprobar_rmt_soc(tramas, texto, "s3")
 
 
 def c3_spi(qemu: str, firmware: str) -> int:
@@ -1275,8 +1308,8 @@ def c3_spi(qemu: str, firmware: str) -> int:
     return 1 if errores else 0
 
 
-def c3_rmt(qemu: str, firmware: str) -> int:
-    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+def rmt_soc(qemu: str, firmware: str, chip: str) -> int:
+    tmp, proc, p_uart, p_puente = (lanzar_c3 if chip == "c3" else lanzar_s3)(qemu, firmware)
     tramas: list = []
     parar = threading.Event()
     hilo = s_uart = s_puente = None
@@ -1286,7 +1319,7 @@ def c3_rmt(qemu: str, firmware: str) -> int:
         hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
         hilo.start()
         s_uart = conectar(p_uart, proc)
-        texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_rmt", "TALLER-FALLO"], 60)
+        texto = leer_uart_hasta(s_uart, [f"TALLER-OK {chip}_rmt", "TALLER-FALLO"], 60)
         if not texto.endswith("\n"):
             texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
         time.sleep(0.5)
@@ -1302,12 +1335,21 @@ def c3_rmt(qemu: str, firmware: str) -> int:
         if proc.stdout is not None:
             proc.stdout.close()
         tmp.cleanup()
-    errores = comprobar_c3_rmt(tramas, texto)
+    errores = comprobar_rmt_soc(tramas, texto, chip)
     for error in errores:
         print("FALLO", error)
-    print("FALLO c3_rmt\n" + texto[-1000:] if errores else
-          "OK c3_rmt: GPIO8, 8 y 30 LED GRB completos, 100 ns por tick y fin explícito")
+    print(f"FALLO {chip}_rmt\n" + texto[-1000:] if errores else
+          f"OK {chip}_rmt: GPIO{8 if chip == 'c3' else 10}, 8 y 30 LED GRB completos, 100 ns por tick y fin explícito")
     return 1 if errores else 0
+
+
+def c3_rmt(qemu: str, firmware: str) -> int:
+    return rmt_soc(qemu, firmware, "c3")
+
+
+def s3_rmt(qemu: str, firmware: str) -> int:
+    return rmt_soc(qemu, firmware, "s3")
+
 # Los GPIO físicos S3 dejan un hueco en los índices 22..25.
 MASCARA_S3 = 0x1fffffc3fffff
 
@@ -1370,7 +1412,7 @@ def s3_analogico(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
-    if modo in ("s3_gpio", "s3_pwm", "s3_analogico"):
+    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo == "c3_gpio":
         sys.exit(c3_gpio(qemu, sys.argv[3]))

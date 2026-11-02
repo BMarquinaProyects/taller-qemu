@@ -96,8 +96,24 @@ Cambios de Taller (resumen):
 - Sketches e imágenes Arduino S3 de 4 MiB, modos `s3_gpio`, `s3_pwm` y
   `s3_analogico` y entradas en `todas.sh`. Verificadores/lanzadores compartidos
   con C3 y pruebas aisladas de modelos, receptor y sockets. GPIO del clásico
-  mantiene su límite de 40 índices y C3 el de 22. IO_MUX, IRQ GPIO, I2C, RMT
+  mantiene su límite de 40 índices y C3 el de 22. IO_MUX, IRQ GPIO
   y SPI de usuario del S3 siguen pendientes. No cambia VERSION ni el protocolo.
+- I2C0 del S3 conectado al modelo compartido C3 (`hw/i2c/esp32c3_i2c.c`),
+  fuente IRQ 42 y espejo Taller de bus 0 antes de HOLA. Receptor S3 para
+  I2C_DISPOSITIVO(18)/I2C_REGISTROS(19); emite I2C_ESCRITURA(5) como C3.
+  Mapa y 314 campos numéricos comunes contrastados con Arduino 3.3.12 / IDF 5.5;
+  diferencias de nombres y límites documentadas en `docs/esp32s3-i2c-rmt.md`.
+- RMT TX C3/S3 compartido (`hw/misc/esp32c3_rmt.c` y cabecera), mapa S3
+  mediante propiedad, cuatro TX y cuatro RX sin recepción, 48 palabras por
+  bloque, RAM S3 desde +0x800 (C3 +0x400), préstamo entre TX, wrap y recarga
+  ping-pong, IRQ 40 y señales 81..84.
+  Callback GPIO por máquina; RMT(7) conserva tick, símbolos y sello inicial.
+  Sin DMA, RX, portadora, sincronización ni modo continuo. La matriz Xtensa S3
+  usa índices y no necesita la corrección BIT_ULL del C3 para Windows.
+- Sketches `s3_i2c` (SDA8/SCL9) y `s3_rmt` (GPIO10, 8/30 LED GRB),
+  imágenes DIO de 4 MiB, modos y verificadores puros en `qemu_prueba.py`,
+  entradas en `todas.sh` y pruebas reales aisladas C3/S3, parser y sockets.
+  Versión 0.13.0 y protocolo v7; 23 modos de `todas.sh` en Linux.
 - Matriz de interrupciones del C3 (`hw/riscv/esp32c3_intmatrix.c`), v0.12.1: `BIT()`
   pasa a `BIT_ULL()`. `BIT(n)` es `1UL << n` y en Windows `long` tiene 32 bits, así que
   las fuentes 32..61 pisaban a las 0..29: el I2C0 (29) activaba también

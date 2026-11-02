@@ -189,6 +189,14 @@ int main(void)
     recibir(adc_c3, sizeof(adc_c3), 2);
     recibir(alta, sizeof(alta), 1);
     recibir(espejo, sizeof(espejo), 1);
+    /* S3: bus 1 se ignora; bus 0 entrega altas y registros fragmentados. */
+    assert(altas == 2 && registros == 2);
+    recibir(alta_c3, sizeof(alta_c3), 1);
+    recibir(espejo_c3, sizeof(espejo_c3), 2);
+    assert(altas == 3 && registros == 3);
+    esp32s3_taller_recibir(&s3, TALLER_TRAMA_I2C_DISPOSITIVO, alta_c3 + 12, 2);
+    esp32s3_taller_recibir(&s3, TALLER_TRAMA_I2C_REGISTROS, espejo_c3 + 12, 2);
+    assert(altas == 3 && registros == 3);
     assert(s3.gpio.llamadas == 1 && s3.gpio.pin == 48 && !s3.gpio.nivel);
     assert(s3.saradc.llamadas == 1 && s3.saradc.pin == 10 && s3.saradc.valor == 0x1234);
     assert(!otro_s3.gpio.llamadas && !otro_s3.saradc.llamadas);
@@ -202,7 +210,7 @@ int main(void)
         esp32s3_taller_recibir(&s3, tipo, NULL, 0);
     }
     assert(s3.gpio.llamadas == 1 && s3.saradc.llamadas == 1);
-    assert(entradas == 1 && analogicos == 1 && altas == 2 && registros == 2);
+    assert(entradas == 1 && analogicos == 1 && altas == 3 && registros == 3);
     receptor_entrante = esp32_taller_recibir;
     receptor_opaque = NULL;
     /* n=201 no cabe: descartar sus 1026 bytes, incluso si contienen cabeceras. */

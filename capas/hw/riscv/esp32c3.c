@@ -555,6 +555,7 @@ static void esp32c3_machine_init(MachineState *machine)
                           qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
 
         ms->rmt.gpio = &ms->gpio;
+        ms->rmt.pin_de_senal = esp32c3_gpio_pin_de_senal;
         sysbus_realize(SYS_BUS_DEVICE(&ms->rmt), &error_fatal);
         mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->rmt), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_RMT_BASE, mr, 0);

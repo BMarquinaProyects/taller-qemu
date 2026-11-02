@@ -1,4 +1,4 @@
-/* Maestro I2C0 del ESP32-C3 para Taller. GPL-2.0-or-later. */
+/* Maestro I2C0 compartido C3/S3 para Taller. GPL-2.0-or-later. */
 #pragma once
 #include "hw/sysbus.h"
 #include "hw/i2c/i2c.h"

@@ -1,4 +1,4 @@
-/* RMT TX del ESP32-C3 para Taller. GPL-2.0-or-later. */
+/* RMT TX compartido C3/S3 para Taller. GPL-2.0-or-later. */
 #pragma once
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
@@ -6,6 +6,7 @@
 #define TYPE_ESP32C3_RMT "esp32c3.rmt"
 #define ESP32C3_RMT(obj) OBJECT_CHECK(ESP32C3RMTState, (obj), TYPE_ESP32C3_RMT)
 #define ESP32C3_RMT_CANALES_TX 2
+#define ESP32C3_RMT_CANALES_MAX 4
 #define ESP32C3_RMT_PALABRAS_BLOQUE 48
 #define ESP32C3_RMT_PALABRAS 192
 #define ESP32C3_RMT_SENAL0 51
@@ -37,10 +38,12 @@ struct ESP32C3RMTState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     qemu_irq irq;
-    struct ESP32C3GPIOState *gpio;
+    void *gpio;
+    int (*pin_de_senal)(void *gpio, int senal);
+    bool s3;
     uint32_t registros[0x100 / 4];
-    uint32_t memoria[ESP32C3_RMT_PALABRAS];
-    unsigned apb_lectura[4];
-    unsigned apb_escritura[4];
-    ESP32C3RMTCanal canal[ESP32C3_RMT_CANALES_TX];
+    uint32_t memoria[ESP32C3_RMT_CANALES_MAX * 2 * ESP32C3_RMT_PALABRAS_BLOQUE];
+    unsigned apb_lectura[ESP32C3_RMT_CANALES_MAX * 2];
+    unsigned apb_escritura[ESP32C3_RMT_CANALES_MAX * 2];
+    ESP32C3RMTCanal canal[ESP32C3_RMT_CANALES_MAX];
 };
