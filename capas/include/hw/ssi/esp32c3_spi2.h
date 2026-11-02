@@ -1,4 +1,4 @@
-/* SPI2 (GPSPI2) de usuario del ESP32-C3 para Taller. GPL-2.0-or-later. */
+/* SPI2 (GPSPI2) compartido C3/S3 para Taller. GPL-2.0-or-later. */
 #pragma once
 #include "hw/sysbus.h"
 #include "hw/ssi/ssi.h"
@@ -15,5 +15,8 @@ typedef struct ESP32C3Spi2State {
     qemu_irq irq;
     SSIBus *spi;
     ESPGdmaState *gdma;
+    bool es_s3;
+    unsigned canales_dma;
+    uint32_t sram_inicio, sram_fin;
     uint32_t registros[0x100 / 4];
 } ESP32C3Spi2State;

@@ -2,6 +2,9 @@
  * ESP32S3 Interrupt Matrix
  *
  * Copyright (c) 2019-2024 Espressif Systems (Shanghai) Co. Ltd.
+ * Copyright (c) 2026 Taller.
+ * Taller (E-039, S3): niveles por fuente y CPU; OR de fuentes y recálculo
+ * al cambiar el nivel o reasignar la fuente en la matriz.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 or
@@ -26,20 +29,39 @@
 
 #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
 
+/*
+ * ESP-IDF habilita la IRQ reasignando su fuente. SPI2 deja trans_done alto
+ * antes de habilitarla: hay que conservar ese nivel y revisar el mapa viejo
+ * y el nuevo. Una fuente compartida que baja no debe apagar las demás.
+ * Arrays por CPU evitan máscaras limitadas a 32/64 fuentes (E-045).
+ */
+static void esp32s3_intmatrix_recalcular(Esp32s3IntMatrixState *s, int cpu,
+                                        int out_index)
+{
+    if (s->outputs[cpu] == NULL) {
+        return;
+    }
+    int nivel = 0;
+    for (int n = 0; n < ESP32S3_INT_MATRIX_INPUTS; n++) {
+        if (IRQ_MAP(cpu, n) == out_index && s->nivel[cpu][n]) {
+            nivel = 1;
+            break;
+        }
+    }
+    for (int i = 0; i < s->cpu[cpu]->env.config->nextint; i++) {
+        if (s->cpu[cpu]->env.config->extint[i] == out_index) {
+            qemu_set_irq(s->outputs[cpu][i], nivel);
+            break;
+        }
+    }
+}
+
 static void esp32s3_intmatrix_irq_handler(void *opaque, int n, int level)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
-        if (s->outputs[i] == NULL) {
-            continue;
-        }
-        int out_index = IRQ_MAP(i, n);
-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
-                qemu_set_irq(s->outputs[i][int_index], level);
-                break;
-            }
-        }
+        s->nivel[i][n] = level != 0;
+        esp32s3_intmatrix_recalcular(s, i, IRQ_MAP(i, n));
     }
 }
 
@@ -72,7 +94,13 @@ static void esp32s3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
     uint8_t* map_entry = get_map_entry(s, addr);
     if (map_entry != NULL) {
+        uint8_t anterior = *map_entry;
         *map_entry = value & 0x1f;
+        if (anterior != *map_entry) {
+            int cpu = (addr / sizeof(uint32_t)) / ESP32S3_INT_MATRIX_INPUTS;
+            esp32s3_intmatrix_recalcular(s, cpu, anterior);
+            esp32s3_intmatrix_recalcular(s, cpu, *map_entry);
+        }
     }
 }
 
@@ -86,6 +114,7 @@ static void esp32s3_intmatrix_reset_hold(Object *obj, ResetType type)
 {
     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(obj);
     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
+    memset(s->nivel, 0, sizeof(s->nivel));
     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
         if (s->outputs[i] == NULL) {
             continue;

@@ -12,6 +12,12 @@
 #define ESP_GDMA_OUT_IDX 1
 #define GDMA_SPI2 0
 #define ESP_GDMA_RAM_ADDR 0x3fc80000u
+#ifndef MODELO_S3
+#define MODELO_S3 0
+#endif
+#define NUM_CANALES (MODELO_S3 ? 5 : 3)
+#define BASE_SRAM (MODELO_S3 ? 0x3fc88000u : ESP_GDMA_RAM_ADDR)
+#define FIN_SRAM (MODELO_S3 ? 0x3fd00000u : 0x3fce0000u)
 #define MEMTXATTRS_UNSPECIFIED 0
 #define MEMTX_OK 0
 typedef int SysBusDevice;
@@ -29,25 +35,25 @@ typedef struct {
     DmaIntState int_state;
 } DmaConfigState;
 typedef struct { DmaConfigState *ch_conf[2]; int dma_as; } ESPGdmaState;
-static uint8_t ram[0x60000], mosi_emitido[100000];
+static uint8_t ram[0x80000], mosi_emitido[100000];
 static unsigned cantidad_emitida, tramas, ultima_trama;
-static int nivel_irq, irq_dma[2][3];
+static int nivel_irq, irq_dma[2][NUM_CANALES];
 static void qemu_set_irq(qemu_irq irq, int nivel) { *irq = nivel; }
 static int address_space_read(int *as, uint32_t addr, int attrs, void *buf, size_t n)
 {
-    /* Como la dma_as real: direcciones absolutas de la SRAM del C3. */
-    assert(addr >= ESP_GDMA_RAM_ADDR);
-    addr -= ESP_GDMA_RAM_ADDR;
-    assert(addr < sizeof(ram) && n <= sizeof(ram) - addr);
+    /* Como la dma_as real: direcciones absolutas de la SRAM del chip. */
+    assert(addr >= BASE_SRAM);
+    addr -= BASE_SRAM;
+    assert(addr < FIN_SRAM - BASE_SRAM && n <= FIN_SRAM - BASE_SRAM - addr);
     memcpy(buf, ram + addr, n);
     return MEMTX_OK;
 }
 static int address_space_write(int *as, uint32_t addr, int attrs, const void *buf, size_t n)
 {
-    /* Como la dma_as real: direcciones absolutas de la SRAM del C3. */
-    assert(addr >= ESP_GDMA_RAM_ADDR);
-    addr -= ESP_GDMA_RAM_ADDR;
-    assert(addr < sizeof(ram) && n <= sizeof(ram) - addr);
+    /* Como la dma_as real: direcciones absolutas de la SRAM del chip. */
+    assert(addr >= BASE_SRAM);
+    addr -= BASE_SRAM;
+    assert(addr < FIN_SRAM - BASE_SRAM && n <= FIN_SRAM - BASE_SRAM - addr);
     memcpy(ram + addr, buf, n);
     return MEMTX_OK;
 }
@@ -79,7 +85,7 @@ static void taller_puente_spi_fin(uint8_t bus)
 /* MODELO_REAL */
 static ESP32C3Spi2State spi;
 static ESPGdmaState gdma;
-static DmaConfigState canales[2][3];
+static DmaConfigState canales[2][NUM_CANALES];
 static void escribir(unsigned a, uint32_t v) { esp32c3_spi2_write(&spi, a, v, 4); }
 static uint32_t leer(unsigned a) { return (uint32_t)esp32c3_spi2_read(&spi, a, 4); }
 static void reset(void)
@@ -87,7 +93,7 @@ static void reset(void)
     esp32c3_spi2_reiniciar(&spi, 0);
     memset(canales, 0, sizeof(canales));
     for (unsigned d = 0; d < 2; d++) {
-        for (unsigned c = 0; c < 3; c++) {
+        for (unsigned c = 0; c < NUM_CANALES; c++) {
             canales[d][c].int_state.irq = &irq_dma[d][c];
         }
     }
@@ -100,8 +106,8 @@ static void desc(unsigned dir, unsigned n, unsigned len, unsigned next, bool eof
     unsigned a = 0x100 + dir * 0x400 + n * 12;
     stl_le_p(ram + a, 0x80000000u | (eof ? 0x40000000u : 0) |
               (dir ? len << 12 : 0) | len);
-    stl_le_p(ram + a + 4, ESP_GDMA_RAM_ADDR + 0x1000 + dir * 0x10000 + n * 4092);
-    stl_le_p(ram + a + 8, next ? ESP_GDMA_RAM_ADDR + a + 12 : 0);
+    stl_le_p(ram + a + 4, BASE_SRAM + 0x1000 + dir * 0x10000 + n * 4092);
+    stl_le_p(ram + a + 8, next ? BASE_SRAM + a + 12 : 0);
 }
 static void arrancar(unsigned dir, unsigned canal)
 {
@@ -109,7 +115,7 @@ static void arrancar(unsigned dir, unsigned canal)
     c->peripheral = 0;
     c->conf1 = 1u << 12; /* CHECK_OWNER */
     c->conf0 = 4; /* AUTO_WRBACK en OUT */
-    c->link = ((ESP_GDMA_RAM_ADDR + 0x100 + dir * 0x400) & 0xfffff) |
+    c->link = ((BASE_SRAM + 0x100 + dir * 0x400) & 0xfffff) |
               (1u << (dir ? 21 : 22));
     c->int_state.ena = 0x1f;
 }
@@ -150,7 +156,7 @@ static void dma_larga(unsigned canal)
     assert(!(ldl_le_p(ram + 0x100) & 0x80000000u));
     unsigned ultimo = 0x100 + 8 * 12;
     assert((ldl_le_p(ram + ultimo) & 0x40fff000u) == (0x40000000u | (32u << 12)));
-    assert(canales[0][canal].suc_eof_desc_addr == ESP_GDMA_RAM_ADDR + ultimo);
+    assert(canales[0][canal].suc_eof_desc_addr == BASE_SRAM + ultimo);
     escribir(0x38, 1u << 12);
     assert(!nivel_irq && !leer(0x3c) && !leer(0x40) && !leer(0x38));
     /* Otro bloque completa el patrón de 40960 bytes, con START y cadena nuevos. */
@@ -170,7 +176,7 @@ static void descriptores_invalidos(void)
 {
     /* Ni descriptores ni buffers pueden salir de SRAM, incluso en el borde. */
     const uint32_t direcciones[] = {
-        0x3fc7fffcu, 0x3fcdfff8u, 0x3fce0000u, 0x3fc80501u,
+        BASE_SRAM - 4, FIN_SRAM - 8, FIN_SRAM, BASE_SRAM + 0x501,
     };
     for (unsigned d = 0; d < 2; d++) {
         uint8_t datos[8] = {0};
@@ -186,7 +192,7 @@ static void descriptores_invalidos(void)
             reset(); desc(d, 0, 8, 0, true); arrancar(d, 1);
             unsigned a = 0x100 + d * 0x400;
             stl_le_p(ram + a + 4, (uint32_t[]){
-                0x60024000u, 0x3fc7fffcu, 0x3fcdfffcu, 0xfffffffcu,
+                0x60024000u, BASE_SRAM - 4, FIN_SRAM - 4, 0xfffffffcu,
             }[i]);
             assert(!esp32c3_spi2_dma_copiar(&spi, !d, datos, sizeof(datos)));
             assert(canales[d][1].int_state.raw == error);
@@ -262,11 +268,22 @@ static void fin_segmento(void)
     escribir(0x38, C3_SPI_SEG_DONE); assert(!nivel_irq);
 }
 
+/* PRUEBAS_S3 */
 int main(void)
 {
     spi.irq = &nivel_irq;
     spi.gdma = &gdma;
+#if MODELO_S3
+    esp32c3_spi2_configurar(&spi, true);
+#else
+    esp32c3_spi2_configurar(&spi, false);
+    escribir(0x44, C3_SPI_DONE); /* INT_SET no existe en C3. */
+    assert(!leer(0x3c));
+#endif
     gdma.ch_conf[0] = canales[0]; gdma.ch_conf[1] = canales[1];
+#if MODELO_S3
+    pruebas_s3();
+#endif
     descriptores_invalidos();
     descriptores_parciales();
     fin_segmento();
@@ -285,7 +302,7 @@ int main(void)
     /* Arduino no habilita USR_COMMAND: no aparece byte cero espurio. */
     escribir(0x18, 7u << 28); escribir(0x98, 0x1234); escribir(0x1c, 15);
     escribir(0, 1u << 24); assert(cantidad_emitida == 6 && mosi_emitido[4] == 0x34 && mosi_emitido[5] == 0x12);
-    for (unsigned c = 0; c < 3; c++) { dma_larga(c); }
+    for (unsigned c = 0; c < NUM_CANALES; c++) { dma_larga(c); }
     reset(); escribir(0x10, 1u << 27); escribir(0x1c, 511);
     for (unsigned i = 0; i < 16; i++) {
         unsigned b = i * 4;
@@ -325,7 +342,7 @@ int main(void)
     /* Ciclo con CHECK_OWNER desactivado: no repetir el descriptor. */
     reset(); desc(1, 0, 4, 0, false); arrancar(1, 0);
     canales[1][0].conf1 = 0; canales[1][0].conf0 = 0;
-    stl_le_p(ram + 0x508, ESP_GDMA_RAM_ADDR + 0x500);
+    stl_le_p(ram + 0x508, BASE_SRAM + 0x500);
     escribir(0x10, 1u << 27); escribir(0x1c, 63); escribir(0x30, 1u << 28);
     escribir(0, 1u << 24);
     assert(cantidad_emitida == 4 && (canales[1][0].int_state.raw & 4));
@@ -342,6 +359,7 @@ int main(void)
     escribir(0xe0, 1u << 27); assert(!(leer(0xe0) & (1u << 27)));
     esp32c3_spi2_reiniciar(&spi, 0); assert(!nivel_irq && !leer(0x3c));
     assert(!leer(0x1000) && !leer(0x99));
-    puts("OK SPI2 C3 real: CPU, GDMA 0/1/2, 40960 bytes, SRAM/OWNER, IRQ y segmento");
+    puts(MODELO_S3 ? "OK SPI2 S3 real: CPU, GDMA 0..4, SRAM alta, INT_SET, IRQ y segmento" :
+                    "OK SPI2 C3 real: CPU, GDMA 0/1/2, 40960 bytes, SRAM/OWNER, IRQ y segmento");
     return 0;
 }

@@ -1,6 +1,6 @@
 # taller-qemu
 
-QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas), ESP32-C3 con GPIO, LEDC, ADC1, I2C0, RMT TX y SPI2 CPU/GDMA, y ESP32-S3 con GPIO, LEDC, ADC1, I2C0 y RMT TX, todos conectados al puente, que usa
+QEMU de Espressif para ESP32 con periféricos extra (GPIO real, ADC1, SPI DMA TX/RX, RMT TX, puente de GPIO/SPI/PWM/analógico/I2C/RMT y entradas temporizadas), ESP32-C3 con GPIO, LEDC, ADC1, I2C0, RMT TX y SPI2 CPU/GDMA, y ESP32-S3 con GPIO, LEDC, ADC1, I2C0, RMT TX y SPI2 CPU/GDMA, todos conectados al puente, que usa
 **Taller**, un simulador de placas y componentes. Ver `AVISO.md` para el origen y los cambios.
 
 ## Compilar
@@ -234,11 +234,11 @@ desplazamiento), así que todo descriptor salía ilegible. Corregido el modelo
 y el doble de las unitarias; `todas.sh` pasa sus 21 modos. **v0.12.0**,
 protocolo **v7**.
 
-## ESP32-S3: GPIO, LEDC, ADC1, I2C0, RMT TX y puente (fase 6d)
+## ESP32-S3: GPIO, LEDC, ADC1, I2C0, RMT TX, SPI2 y puente (fase 6d)
 
 Usar **qemu-system-xtensa -machine esp32s3**. La máquina de las capas
 (`hw/xtensa/esp32s3.c`) sustituye el GPIO mínimo de Espressif y conecta el
-mismo chardev `taller-puente`: HOLA, GPIO, PWM, DISPARO y TIEMPO **v7**.
+mismo chardev `taller-puente`: HOLA, GPIO, SPI, PWM, DISPARO y TIEMPO **v7**.
 ENTRADA, ENTRADA_ARMADA y ANALOGICO llegan a su receptor propio, sin cambiar
 el protocolo: las máscaras GPIO ya son de 64 bits. Se conservan los demás
 dispositivos de la máquina base `esp-develop-9.2.2-20260417`.
@@ -279,15 +279,22 @@ sigue validando 40 índices para las pruebas del clásico.
 |---|---|
 | LEDC | Reutiliza `hw/misc/esp32c3_ledc.c`, parametrizado a **8 canales LS y 4 timers**, con señales **73..80** (`LEDC_LS_SIG_OUT0..7` de `gpio_sig_map.h`). Base `0x60019000`; registros de canal, timer y reloj coinciden con C3. Frecuencia y ciclo usan el mismo cálculo, relojes y tramas PWM; cambiar la ruta apaga el pin anterior. El C3 conserva 6 canales y señales 45..50. Sin fades, IRQ ni pulsos GPIO individuales. |
 | ADC1 | Modelo propio `hw/misc/esp32s3_saradc.c`: **10 canales, GPIO1..10**, según `adc_channel.h`. `adc_ll.h` usa **SENS**, base **`0x60008800`**, no `APB_SARADC.ONETIME_SAMPLE` del C3. `SAR_MEAS1_CTRL2` (`0x0c`) selecciona un pad en bits 30..19; START (17) completa la conversión y publica DONE (16) y dato (15..0), ambos de solo lectura. Bajar START limpia DONE; mantenerlo alto no repite conversión. `SARADC_MEAS_STATUS` permanece libre. ANALOGICO inyecta el crudo, limitado a 4095; las entradas sobreviven al reset. `SAR_MEAS2_CTRL2` (`0x30`) termina con cero para permitir la autocalibración de arranque de ADC2. Sin canales ADC2 externos, DMA, ULP, latencia, IRQ ni calibración analógica. |
-| UART, TIMG, SYSTIMER, matriz IRQ, flash y GDMA | Modelos de Espressif conservados. El revisor confirmó previamente arranque Arduino por UART0 con flash DIO desde 0x0 y watchdog TIMG desactivado. |
+| UART, TIMG, SYSTIMER, matriz IRQ y flash | Modelos de Espressif conservados. El revisor confirmó previamente arranque Arduino por UART0 con flash DIO desde 0x0 y watchdog TIMG desactivado. |
 | I2C0 | Reutiliza `hw/i2c/esp32c3_i2c.c` sin parámetros: mapa, bits y comandos coinciden con S3. Base `0x60013000`, fuente IRQ `ETS_I2C_EXT0_INTR_SOURCE`=42. FIFO APB de 32 bytes, ocho comandos, END sin STOP, RSTART, NACK y reset; espejo `taller_i2c` del puente en bus 0, preparado antes de HOLA. El receptor acepta I2C_DISPOSITIVO(18)/I2C_REGISTROS(19); las escrituras salen como I2C_ESCRITURA(5). Sin I2C1, esclavo, DMA, ventanas FIFO de RAM ni temporización eléctrica. |
 | RMT TX | Reutiliza `hw/misc/esp32c3_rmt.c` con propiedad `s3=true`: **TX0..3**, registros RX4..7 sin recepción, **48 palabras por canal**, RAM en **`+0x800`** (`0x60016800`, distinta del C3), señales GPIO **81..84** y IRQ `ETS_RMT_INTR_SOURCE`=40. Base `0x60016000`. Mapa y STATUS propios del S3, préstamo limitado a bloques TX, wrap, umbral con contrapresión y recarga ping-pong, STOP/reset y fin. RMT(7) transmite GPIO, tick y todos los símbolos, conservando inicio al trocear. Mismos relojes y cálculo del tick C3. Sin RX, DMA, portadora, sincronización ni modo continuo. |
-| SPI de usuario | Pendiente en S3. SPI1 sigue sirviendo la flash. |
+| SPI2/FSPI de usuario | Motor `hw/ssi/esp32c3_spi2.c` compartido mediante tipo `esp32s3.spi2`: base **0x60024000**, W0–W15, UPDATE/USR, MS_DLEN de 18 bits, CPU y GDMA TX/RX. Cada transacción vacía MOSI exacto por **bus 2**; MISO FF. IRQ `ETS_SPI2_INTR_SOURCE`, fin bit 12, RAW/ENA/ST/CLR e **INT_SET +0x44** W1S para primera ISR del HAL S3. Señales FSPICLK=101 y FSPID=103. SPI1 conserva flash/PSRAM. |
+| GDMA | Cinco canales del modelo S3 de Espressif, IRQ IN/OUT separadas y mapa nativo (canal a stride 0xc0, OUT +0x60, LINK +0x20). Adaptador de las capas limpia pulsos STOP/reset y PARK al START. SPI2 exige periférico 0 y START; descriptores de 12 bytes en SRAM **0x3FC88000..0x3FD00000**, direcciones **absolutas** en dma_as (E-046), OWNER/EOF, errores y cadenas acotadas. |
 
 Contraste registro a registro y diferencias C3/S3 en
 [`docs/esp32s3-i2c-rmt.md`](docs/esp32s3-i2c-rmt.md). Se compararon las cabeceras
 instaladas de Arduino **3.3.12 / IDF 5.5**. La matriz Xtensa S3 usa índices por
 fuente, sin máscaras `long`; las fuentes 40/42 no sufren E-045 en Windows.
+
+SPI2 se contrasta con Arduino **3.3.12 / IDF 5.5** en
+[`docs/esp32s3-spi.md`](docs/esp32s3-spi.md): mapa compartido, INT_SET y
+SPI_DATE propios del S3, diferencias CTRL/octal/DTR y mapa GDMA. Sin tiempo
+eléctrico, orden de bits en hilo, dual/quad/octal, esclavo, PSRAM DMA,
+RESTART, circular ni buffers SCT. No genera pulsos de reloj/CS por GPIO.
 
 ### Pruebas S3
 
@@ -306,6 +313,14 @@ fuente, sin máscaras `long`; las fuentes 40/42 no sufren E-045 en Windows.
   trenes completos, tick de 100 ns, fin explícito, 193/721 símbolos y
   `TALLER-OK s3_rmt`. Ambos tamaños fuerzan recarga por ISR.
 
+- `s3_spi`: **SCK12/MOSI11/MISO13**, `SPI` Arduino emite `abcd` por CPU.
+  Después `spi_master` con DMA automático e ISR envía **32768+8192 bytes**
+  de patrón `uint8_t(i)` y lee cuatro bytes por DMA. Exige **40968 bytes
+  MOSI exactos por bus 2**, HOLA v7, `S3-SPI-MISO=ffffffff` y
+  `TALLER-OK s3_spi`, completos y ordenados. Verificador puro, sockets y
+  modelos reales SPI2/GDMA/emisor aislados; incluye canales 0..4, SRAM alta,
+  INT_SET, STOP/reset, OWNER/EOF, cadenas parciales/cíclicas y regresión C3.
+
 Los verificadores puros y lanzadores se comparten con C3, parametrizados por
 chip, GPIO y máscara válida. Cada ejecución usa una **copia privada** de la
 flash de **4 MiB**, sin eFuse ECO3 del clásico, UART0, `-icount
@@ -313,7 +328,7 @@ shift=2,align=off,sleep=on` y
 `-global driver=timer.esp32s3.timg,property=wdt_disable,value=true`.
 La instalación de QEMU debe incluir la ROM `esp32s3_rev0_rom.bin`.
 
-Los cinco sketches e imágenes están en `pruebas/s3_*_prueba/` y
+Los seis sketches e imágenes están en `pruebas/s3_*_prueba/` y
 `pruebas/s3_*_prueba.flash.bin`. Compilados con CLI de Taller **1.5.1** y core
 **3.3.12**; bootloader en **0x0**, particiones en **0x8000**, boot_app0 en
 **0xe000** y aplicación en **0x10000**:
@@ -322,7 +337,7 @@ Los cinco sketches e imágenes están en `pruebas/s3_*_prueba/` y
 $cli = "$env:APPDATA\dev.taller.app\arduino-cli\1.5.1\arduino-cli.exe"
 $config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
 $fqbn = 'esp32:esp32:esp32s3:FlashMode=dio,FlashSize=4M,PSRAM=disabled,CDCOnBoot=default'
-foreach ($nombre in 's3_gpio_prueba', 's3_pwm_prueba', 's3_analogico_prueba', 's3_i2c_prueba', 's3_rmt_prueba') {
+foreach ($nombre in 's3_gpio_prueba', 's3_pwm_prueba', 's3_analogico_prueba', 's3_i2c_prueba', 's3_rmt_prueba', 's3_spi_prueba') {
   $compilacion = Join-Path $PWD ".trabajo\$nombre"
   & $cli --config-file $config compile --fqbn $fqbn `
     --build-path $compilacion "pruebas/$nombre"
@@ -340,6 +355,7 @@ SHA-256 de las imágenes incluidas:
 | `s3_analogico_prueba.flash.bin` | `ec1337eca9dc628588fe472069f00900fc3779d0eaba87ab5e0a5e9eb3b14cd8` |
 | `s3_i2c_prueba.flash.bin` | `c7e824ba8c74f95308d4d1c70247509989c7db5ba470514d36258ba0f0f15246` |
 | `s3_rmt_prueba.flash.bin` | `a508468145db10c0233864a3a5580ac034db0040647b9734065474dfbafad55e` |
+| `s3_spi_prueba.flash.bin` | `cea4c292ce30fca58fe927583059636d2e678f63fc619d6c4edcf697d500aa07` |
 
 ```sh
 python3 -m unittest discover -s pruebas -p '*_unitarias.py'
@@ -348,6 +364,7 @@ python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_pwm pruebas/s3_pwm_pr
 python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_analogico pruebas/s3_analogico_prueba.flash.bin
 python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_i2c pruebas/s3_i2c_prueba.flash.bin
 python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_rmt pruebas/s3_rmt_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_spi pruebas/s3_spi_prueba.flash.bin
 bash pruebas/todas.sh /ruta/qemu-system-xtensa /ruta/qemu-system-riscv32
 ```
 
@@ -404,7 +421,20 @@ componentes, DIO, identificador S3, FQBN y tamaño de 4 MiB. Los sketches usan
 Wire y `rmtWrite`, como sus equivalentes C3. En la revisión (v0.13.0) se
 compiló QEMU completo y `todas.sh` pasa sus 23 modos en Linux, `s3_i2c` y
 `s3_rmt` incluidos; 121 unitarias. La matriz de interrupciones Xtensa del S3
-guarda las fuentes en arrays, sin el problema de `BIT()` del C3 en Windows.
+usa índices en su mapa, sin el problema de `BIT()` del C3 en Windows; la
+conservación de niveles y el OR al reasignar se corrigen en el paso SPI2.
+
+En este paso SPI2 S3, la revisión en QEMU detectó un bloqueo antes del
+primer GDMA: IDF habilita la interrupción reasignando la fuente con
+`trans_done` ya alto. La capa `esp32s3_intc.c` y su cabecera conservan
+niveles por fuente/CPU y recalculan el OR en las líneas vieja y nueva.
+Sus seis regresiones fallan con el original del tarball y pasan con el arreglo.
+**137 unitarias pasan en WSL, sin omisiones**; matriz, SPI2, GDMA S3 y máquina
+S3 generan objetos aislados con GCC, cabeceras reales y `-Werror`.
+RAW/ENA/SET/CLR de SPI2 y RAW/ENA/CLR de GDMA ya recalculan sus IRQ.
+Imagen S3 DIO de 4 MiB compilada y verificada. En la revisión (v0.14.0) se compiló QEMU completo: `todas.sh` pasa sus 23 modos en Linux,
+`s3_spi` incluido (40 968 bytes MOSI exactos por el bus 2 y MISO `ffffffff`), y 137 unitarias.
+Detalle en [`docs/esp32s3-spi.md`](docs/esp32s3-spi.md).
 
 ## Protocolo del puente (v7)
 
@@ -415,7 +445,7 @@ little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=7, u16 longitud
 |---|---|
 | 1 HOLA | `u32 version_protocolo` (= 7) |
 | 2 GPIO | `u64 niveles, u64 salidas` (bit n = GPIO n) |
-| 3 SPI  | `u8 bus` (clásico: 2 = HSPI, 3 = VSPI; C3: **2 = SPI2/FSPI**) + bytes MOSI de una transacción, troceados si superan 4096 bytes |
+| 3 SPI  | `u8 bus` (clásico: 2 = HSPI, 3 = VSPI; C3/S3: **2 = SPI2/FSPI**) + bytes MOSI de una transacción, troceados si superan 4096 bytes |
 | 4 PWM | `u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm` (9 bytes, sin relleno) |
 | 5 I2C_ESCRITURA | `u8 bus, u8 direccion, bytes…`: escritura completa, incluido el puntero; hasta 4094 bytes de datos por trama |
 | 6 DISPARO | `u8 pin_disparo`; `t_ns` es el instante virtual del flanco que inicia el tren |

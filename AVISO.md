@@ -22,6 +22,12 @@ Cambios de Taller (resumen):
 - Prueba MicroPython v1.29.0 mediante REPL raw paste, con verificación exacta
   de 40 960 bytes y recepción MISO. El firmware externo no se distribuye aquí.
 - Matriz de interrupciones (`hw/xtensa/esp32_intc.c`): nivel por fuente y líneas como OR de sus fuentes, recalculadas al reasignar.
+- Matriz S3 (`hw/xtensa/esp32s3_intc.c` y cabecera): originales del tarball
+  de Espressif, con niveles por fuente y CPU en arrays (E-039/E-045), OR de
+  fuentes compartidas y recálculo de líneas vieja/nueva al reasignar. Permite
+  que `esp_intr_enable` despierte la ISR SPI2 con `trans_done` ya pendiente.
+  Prueba real aislada en `pruebas/s3_intmatrix_unitarias.py`, ambas CPU,
+  fuentes 29/61/90+ y reset; falla con el original y pasa con la corrección.
 - GPIO del ESP32-C3 independiente del clásico, con 22 pines, registros OUT/ENABLE/IN,
   W1TS/W1TC, PAD_DRIVER en `0x74 + 4·n`, selección de salida conservada en
   `0x554 + 4·n` y trenes armados reutilizados (`hw/gpio/esp32c3_gpio.c` y cabecera).
@@ -97,7 +103,7 @@ Cambios de Taller (resumen):
   `s3_analogico` y entradas en `todas.sh`. Verificadores/lanzadores compartidos
   con C3 y pruebas aisladas de modelos, receptor y sockets. GPIO del clásico
   mantiene su límite de 40 índices y C3 el de 22. IO_MUX, IRQ GPIO
-  y SPI de usuario del S3 siguen pendientes. No cambia VERSION ni el protocolo.
+  siguen pendientes. SPI2 se incorpora en el paso descrito abajo (v0.14.0).
 - I2C0 del S3 conectado al modelo compartido C3 (`hw/i2c/esp32c3_i2c.c`),
   fuente IRQ 42 y espejo Taller de bus 0 antes de HOLA. Receptor S3 para
   I2C_DISPOSITIVO(18)/I2C_REGISTROS(19); emite I2C_ESCRITURA(5) como C3.
@@ -119,3 +125,22 @@ Cambios de Taller (resumen):
   las fuentes 32..61 pisaban a las 0..29: el I2C0 (29) activaba también
   CACHE_CORE0_ACS (61) y el firmware caía en «Cache error». Prueba aislada en
   `pruebas/c3_intmatrix_unitarias.py`.
+
+- SPI2/FSPI maestro S3: reutiliza `hw/ssi/esp32c3_spi2.c` con tipo derivado
+  `esp32s3.spi2`, cinco canales GDMA, SRAM 0x3FC88000..0x3FD00000,
+  INT_SET +0x44 W1S y SPI_DATE S3. CPU W0–W15, UPDATE/USR, DLEN de 18 bits,
+  fases de comando/dirección, MISO FF, IRQ SPI2 y descriptores TX/RX de
+  12 bytes con OWNER/EOF, errores y recorrido acotado. Direcciones dma_as
+  absolutas (E-046), también en dobles; sin máscaras long (E-045).
+- Máquina S3 conecta SPI2 en 0x60024000 al GDMA y a `taller.spi` bus 2;
+  Meson compila el motor compartido en ambos chips. SPI1 conserva flash/PSRAM.
+  `hw/dma/esp32s3_gdma.c` conserva traductor y mapa nativos de Espressif,
+  con pulsos STOP/reset y PARK al nuevo START; cabecera S3 copiada del árbol
+  base sin cambios para pruebas reproducibles. No cambia el motor genérico.
+- Sketch e imagen DIO S3 de 4 MiB con Arduino 3.3.12, modo `s3_spi` y
+  verificador puro (40968 bytes MOSI exactos por bus 2, lectura DMA FF),
+  pruebas de sockets y modelos SPI2/GDMA/emisor reales compilados aislados.
+  `todas.sh` añade el modo con finales LF. Documentación del contraste C3/S3
+  y límites en `docs/esp32s3-spi.md`. Sin temporización eléctrica, SPI3,
+  orden de bits en hilo, octal/DTR, esclavo, PSRAM DMA, circular ni SCT.
+  Versión 0.14.0, protocolo v7. 23 modos de `todas.sh` en Linux, `s3_spi` incluido.

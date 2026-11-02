@@ -21,6 +21,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_analogico <s3_analogico_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_i2c <s3_i2c_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_rmt <s3_rmt_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_spi <s3_spi_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -1109,10 +1110,10 @@ def comprobar_tramas_c3(tramas: list, tipo_datos: int) -> list[str]:
     return comprobar_tramas_periferico_soc(tramas, tipo_datos, "c3")
 
 
-def comprobar_c3_spi(tramas: list, texto: str) -> list[str]:
+def comprobar_spi_soc(tramas: list, texto: str, chip: str) -> list[str]:
     """Exige MOSI completo de SPI2: abcd, 40960 bytes y cuatro clocks RX."""
-    errores = comprobar_tramas_c3(tramas, 3)
-    lineas = ("C3-SPI-MISO=ffffffff", "TALLER-OK c3_spi")
+    errores = comprobar_tramas_periferico_soc(tramas, 3, chip)
+    lineas = (f"{chip.upper()}-SPI-MISO=ffffffff", f"TALLER-OK {chip}_spi")
     posiciones = []
     for linea in lineas:
         coincidencias = list(re.finditer(r"^" + re.escape(linea) + r"\r?\n", texto, re.MULTILINE))
@@ -1134,6 +1135,14 @@ def comprobar_c3_spi(tramas: list, texto: str) -> list[str]:
     if datos != esperado:
         errores.append(f"MOSI SPI2 distinto: {len(datos)} bytes, esperados {len(esperado)}")
     return errores
+
+
+def comprobar_c3_spi(tramas: list, texto: str) -> list[str]:
+    return comprobar_spi_soc(tramas, texto, "c3")
+
+
+def comprobar_s3_spi(tramas: list, texto: str) -> list[str]:
+    return comprobar_spi_soc(tramas, texto, "s3")
 
 
 def comprobar_i2c_soc(tramas: list, texto: str, chip: str) -> list[str]:
@@ -1273,8 +1282,8 @@ def comprobar_s3_rmt(tramas: list, texto: str) -> list[str]:
     return comprobar_rmt_soc(tramas, texto, "s3")
 
 
-def c3_spi(qemu: str, firmware: str) -> int:
-    tmp, proc, p_uart, p_puente = lanzar_c3(qemu, firmware)
+def spi_soc(qemu: str, firmware: str, chip: str) -> int:
+    tmp, proc, p_uart, p_puente = (lanzar_c3 if chip == "c3" else lanzar_s3)(qemu, firmware)
     tramas: list = []
     parar = threading.Event()
     hilo = s_uart = s_puente = None
@@ -1284,7 +1293,7 @@ def c3_spi(qemu: str, firmware: str) -> int:
         hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
         hilo.start()
         s_uart = conectar(p_uart, proc)
-        texto = leer_uart_hasta(s_uart, ["TALLER-OK c3_spi", "TALLER-FALLO"], 60)
+        texto = leer_uart_hasta(s_uart, [f"TALLER-OK {chip}_spi", "TALLER-FALLO"], 60)
         if not texto.endswith("\n"):
             texto += leer_uart_hasta(s_uart, ["\n"], 0.5)
         time.sleep(0.5)
@@ -1300,12 +1309,20 @@ def c3_spi(qemu: str, firmware: str) -> int:
         if proc.stdout is not None:
             proc.stdout.close()
         tmp.cleanup()
-    errores = comprobar_c3_spi(tramas, texto)
+    errores = comprobar_spi_soc(tramas, texto, chip)
     for error in errores:
         print("FALLO", error)
-    print("FALLO c3_spi\n" + texto[-1000:] if errores else
-          "OK c3_spi: SPI2 bus 2, 40968 bytes MOSI exactos y MISO ffffffff")
+    print(f"FALLO {chip}_spi\n" + texto[-1000:] if errores else
+          f"OK {chip}_spi: SPI2 bus 2, 40968 bytes MOSI exactos y MISO ffffffff")
     return 1 if errores else 0
+
+
+def c3_spi(qemu: str, firmware: str) -> int:
+    return spi_soc(qemu, firmware, "c3")
+
+
+def s3_spi(qemu: str, firmware: str) -> int:
+    return spi_soc(qemu, firmware, "s3")
 
 
 def rmt_soc(qemu: str, firmware: str, chip: str) -> int:
@@ -1412,7 +1429,7 @@ def s3_analogico(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
-    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt"):
+    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo == "c3_gpio":
         sys.exit(c3_gpio(qemu, sys.argv[3]))

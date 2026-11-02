@@ -1,4 +1,4 @@
-/* SPI2 maestro C3: FIFO CPU y descriptores del GDMA compartido de Espressif.
+/* SPI2 maestro C3/S3: FIFO CPU y descriptores del GDMA de Espressif.
  * Registros contrastados con spi_{reg,struct}.h y spi_ll.h de Arduino 3.3.12.
  * GPL-2.0-or-later. Operaciones síncronas, MISO en reposo a FF.
  */
@@ -6,6 +6,7 @@
 #include "qemu/bswap.h"
 #include "hw/irq.h"
 #include "hw/ssi/esp32c3_spi2.h"
+#include "hw/ssi/esp32s3_spi2.h"
 #include "hw/misc/taller_puente.h"
 
 /* Estado y registros independientes del SPI1 de flash y del SPI clásico. */
@@ -17,6 +18,7 @@
 #define C3_SPI_CLR 0x38
 #define C3_SPI_RAW 0x3c
 #define C3_SPI_ST 0x40
+#define S3_SPI_SET 0x44
 #define C3_SPI_W0 0x98
 #define C3_SPI_SLAVE 0xe0
 #define C3_SPI_USR (1u << 24)
@@ -29,7 +31,14 @@
 #define C3_SPI_IRQ_MASK 0x1fffffu
 #define C3_DMA_OWNER (1u << 31)
 #define C3_DMA_EOF (1u << 30)
-#define C3_DMA_SRAM_FIN 0x3fce0000u
+
+static void esp32c3_spi2_configurar(ESP32C3Spi2State *s, bool s3)
+{
+    s->es_s3 = s3;
+    s->canales_dma = s3 ? 5 : 3;
+    s->sram_inicio = s3 ? 0x3fc88000u : ESP_GDMA_RAM_ADDR;
+    s->sram_fin = s3 ? 0x3fd00000u : 0x3fce0000u;
+}
 
 static void esp32c3_spi2_irq(ESP32C3Spi2State *s)
 {
@@ -59,7 +68,7 @@ static DmaConfigState *esp32c3_spi2_canal(ESP32C3Spi2State *s, bool rx)
     /* No usar get_channel_periph de la base: combina periférico y START con
      * OR y prueba el bit START de OUT incluso al buscar IN. Aquí se requieren
      * ambas condiciones y nunca se consume un canal ajeno o ya terminado. */
-    for (unsigned n = 0; n < 3; n++) {
+    for (unsigned n = 0; n < s->canales_dma; n++) {
         DmaConfigState *c = &s->gdma->ch_conf[dir][n];
 
         if ((c->peripheral & 63) == GDMA_SPI2 &&
@@ -76,10 +85,11 @@ static bool esp32c3_spi2_memoria(ESP32C3Spi2State *s, bool escribir,
 {
     /* dma_as tiene como raíz el alias DRAM, que está en 0x3FC80000 dentro de
      * sys_mem: QEMU conserva ese desplazamiento al aplanar la vista, así que las
-     * direcciones son absolutas, como en esp_gdma.c. Solo SRAM C3: un
+     * direcciones son absolutas, como en esp_gdma.c. En S3 la raíz es DRAM
+     * directa, también colocada en sys_mem. Solo SRAM DMA del chip: un
      * descriptor nunca ejecuta MMIO ni accede a la flash. */
-    if (dir < ESP_GDMA_RAM_ADDR || dir >= C3_DMA_SRAM_FIN ||
-        n > C3_DMA_SRAM_FIN - dir) {
+    if (dir < s->sram_inicio || dir >= s->sram_fin ||
+        n > s->sram_fin - dir) {
         return false;
     }
     return (escribir ? address_space_write(&s->gdma->dma_as, dir,
@@ -93,7 +103,7 @@ static size_t esp32c3_spi2_dma_copiar(ESP32C3Spi2State *s, bool rx,
 {
     DmaConfigState *c = esp32c3_spi2_canal(s, rx);
     uint32_t eventos = 0, error = rx ? 8 : 4;
-    uint8_t visitados[0x60000 / 32] = {0}; /* Un bit por dirección SRAM alineada. */
+    uint8_t visitados[0x80000 / 32] = {0}; /* Un bit por dirección SRAM alineada. */
     uint32_t dir;
     size_t total = 0;
 
@@ -116,7 +126,7 @@ static size_t esp32c3_spi2_dma_copiar(ESP32C3Spi2State *s, bool rx,
             eventos |= error;
             break;
         }
-        unsigned indice = (dir - ESP_GDMA_RAM_ADDR) / 4;
+        unsigned indice = (dir - s->sram_inicio) / 4;
         if (visitados[indice / 8] & (1u << (indice % 8))) {
             eventos |= error;
             break;
@@ -255,9 +265,9 @@ static void esp32c3_spi2_transaccion(ESP32C3Spi2State *s)
     esp32c3_spi2_irq(s);
 }
 
-static bool esp32c3_spi2_registro(hwaddr addr)
+static bool esp32c3_spi2_registro(ESP32C3Spi2State *s, hwaddr addr)
 {
-    return !(addr & 3) && (addr <= 0x40 ||
+    return !(addr & 3) && (addr <= (s->es_s3 ? S3_SPI_SET : C3_SPI_ST) ||
            (addr >= C3_SPI_W0 && addr <= 0xe8) || addr == 0xf0);
 }
 
@@ -265,7 +275,8 @@ static uint64_t esp32c3_spi2_read(void *opaque, hwaddr addr, unsigned size)
 {
     ESP32C3Spi2State *s = ESP32C3_SPI2(opaque);
 
-    if (!esp32c3_spi2_registro(addr) || addr == C3_SPI_CMD || addr == C3_SPI_CLR) {
+    if (!esp32c3_spi2_registro(s, addr) || addr == C3_SPI_CMD ||
+        addr == C3_SPI_CLR || addr == S3_SPI_SET) {
         return 0;
     }
     return s->registros[addr / 4];
@@ -276,7 +287,7 @@ static void esp32c3_spi2_write(void *opaque, hwaddr addr, uint64_t value, unsign
     ESP32C3Spi2State *s = ESP32C3_SPI2(opaque);
     uint32_t v = (uint32_t)value;
 
-    if (!esp32c3_spi2_registro(addr) || addr == C3_SPI_ST) { return; }
+    if (!esp32c3_spi2_registro(s, addr) || addr == C3_SPI_ST) { return; }
     if (addr == C3_SPI_CMD) {
         /* UPDATE no transmite. Ambos pulsos terminan dentro del acceso MMIO. */
         if ((v & C3_SPI_USR) && !(s->registros[C3_SPI_SLAVE / 4] & (1u << 26))) {
@@ -284,6 +295,9 @@ static void esp32c3_spi2_write(void *opaque, hwaddr addr, uint64_t value, unsign
         }
     } else if (addr == C3_SPI_CLR) {
         s->registros[C3_SPI_RAW / 4] &= ~(v & C3_SPI_IRQ_MASK);
+    } else if (addr == S3_SPI_SET) {
+        /* HAL S3 usa SET W1S para despertar su ISR antes del primer USR. */
+        s->registros[C3_SPI_RAW / 4] |= v & C3_SPI_IRQ_MASK;
     } else {
         if (addr == C3_SPI_RAW || addr == C3_SPI_ENA) { v &= C3_SPI_IRQ_MASK; }
         if (addr == C3_SPI_DLEN) { v &= 0x3ffff; }
@@ -310,7 +324,7 @@ static void esp32c3_spi2_reiniciar(Object *obj, ResetType tipo)
 
     memset(s->registros, 0, sizeof(s->registros));
     s->registros[0x20 / 4] = 0x3f; /* CS0..5 deshabilitados. */
-    s->registros[0xf0 / 4] = 0x02007220;
+    s->registros[0xf0 / 4] = s->es_s3 ? 0x02101190 : 0x02007220;
     esp32c3_spi2_irq(s);
 }
 
@@ -318,6 +332,7 @@ static void esp32c3_spi2_init(Object *obj)
 {
     ESP32C3Spi2State *s = ESP32C3_SPI2(obj);
 
+    esp32c3_spi2_configurar(s, false);
     memory_region_init_io(&s->iomem, obj, &esp32c3_spi2_ops, s,
                           TYPE_ESP32C3_SPI2, ESP32C3_SPI2_REGS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
@@ -340,9 +355,21 @@ static const TypeInfo esp32c3_spi2_info = {
     .class_init = esp32c3_spi2_class_init,
 };
 
+static void esp32s3_spi2_init(Object *obj)
+{
+    esp32c3_spi2_configurar(ESP32C3_SPI2(obj), true);
+}
+
+static const TypeInfo esp32s3_spi2_info = {
+    .name = TYPE_ESP32S3_SPI2,
+    .parent = TYPE_ESP32C3_SPI2,
+    .instance_init = esp32s3_spi2_init,
+};
+
 static void esp32c3_spi2_register_types(void)
 {
     type_register_static(&esp32c3_spi2_info);
+    type_register_static(&esp32s3_spi2_info);
 }
 
 type_init(esp32c3_spi2_register_types)

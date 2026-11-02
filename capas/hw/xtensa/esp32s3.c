@@ -1,5 +1,5 @@
 /*
- * SoC y máquina ESP32-S3; capas de Taller para GPIO, LEDC, ADC1, I2C0 y RMT TX.
+ * SoC y máquina ESP32-S3; GPIO, LEDC, ADC1, I2C0, RMT TX y SPI2 CPU/GDMA.
  *
  * Copyright (c) 2023-2024 Espressif Systems (Shanghai) Co. Ltd.
  * Copyright (c) 2026 Taller.
@@ -49,6 +49,7 @@
 #include "elf.h"
 
 #include "hw/ssi/esp32s3_spi.h"
+#include "hw/ssi/esp32s3_spi2.h"
 #include "hw/misc/esp32s3_cache.h"
 #include "hw/char/esp32s3_uart.h"
 #include "hw/misc/esp32s3_rng.h"
@@ -144,6 +145,7 @@ typedef struct Esp32s3SocState {
 
     MemoryRegion cpu_specific_mem[ESP32S3_CPU_COUNT];
     ESP32S3SpiState spi1;
+    ESP32S3Spi2State spi2;
     ESP32S3CacheState cache;
     ESP32S3EfuseState efuse;
     ESP32S3ClockState clock;
@@ -667,6 +669,7 @@ static void esp32s3_machine_init(MachineState *machine)
 
     object_initialize_child(OBJECT(ss), "extmem", &ss->cache, TYPE_ESP32S3_CACHE);
     object_initialize_child(OBJECT(ss), "spi1", &ss->spi1, TYPE_ESP32S3_SPI);
+    object_initialize_child(OBJECT(ss), "spi2", &ss->spi2, TYPE_ESP32S3_SPI2);
     object_initialize_child(OBJECT(ss), "efuse", &ss->efuse, TYPE_ESP32S3_EFUSE);
     object_initialize_child(OBJECT(ss), "jtag", &ss->jtag, TYPE_ESP32C3_JTAG);
     object_initialize_child(OBJECT(ss), "gpio", &ss->gpio, TYPE_ESP32S3_GPIO);
@@ -843,9 +846,20 @@ static void esp32s3_machine_init(MachineState *machine)
                           qdev_get_gpio_in(intmatrix_dev, ETS_RMT_INTR_SOURCE));
     }
 
+    /* SPI2/FSPI de usuario; SPI1 continúa dedicado a flash/PSRAM. */
+    ss->spi2.gdma = ESP_GDMA(&ss->gdma);
+    sysbus_realize(SYS_BUS_DEVICE(&ss->spi2), &error_fatal);
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_SPI2_BASE,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->spi2), 0), 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&ss->spi2), 0,
+                      qdev_get_gpio_in(intmatrix_dev, ETS_SPI2_INTR_SOURCE));
+
     /* Habilitar el puente cuando todos sus receptores ya existen. */
     Chardev *puente = qemu_chr_find(TALLER_PUENTE_CHARDEV);
     if (puente) {
+        DeviceState *periferico = qdev_new(TYPE_TALLER_SPI);
+        qdev_prop_set_uint8(periferico, "bus", ESP32S3_SPI2_BUS);
+        qdev_realize_and_unref(periferico, BUS(ss->spi2.spi), &error_fatal);
         taller_i2c_preparar(ss->i2c.bus, 0);
         taller_puente_iniciar(puente, esp32s3_taller_recibir, ss);
     }

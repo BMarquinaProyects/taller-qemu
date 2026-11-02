@@ -21,6 +21,11 @@ def ejecutar_modelo(caso, nombre, carpeta="misc", s3=False):
     reset = codigo[codigo.index(f"static void esp32c3_{nombre}_reiniciar"):
                    codigo.index(f"static void esp32c3_{nombre}_init")]
     plantilla = (raiz / f"pruebas/c3_{nombre}_modelo.c").read_text(encoding="utf-8")
+    if nombre == "spi2":
+        # Ambos chips ejecutan el mismo motor; S3 añade sus diferencias reales.
+        if s3:
+            plantilla = plantilla.replace("/* PRUEBAS_S3 */", (
+                raiz / "pruebas/s3_spi2_modelo.c").read_text(encoding="utf-8"))
     codigo = plantilla.replace("/* CABECERA_REAL */", cab).replace(
         "/* MODELO_REAL */", codigo[inicio:fin] + reset)
     if s3:

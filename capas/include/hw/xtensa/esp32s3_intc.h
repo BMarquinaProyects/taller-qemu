@@ -2,6 +2,8 @@
  * ESP32S3 Interrupt Matrix
  *
  * Copyright (c) 2019 Espressif Systems (Shanghai) Co. Ltd.
+ * Copyright (c) 2026 Taller.
+ * Taller: conserva niveles por fuente y CPU para OR y reasignación (E-039).
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 or
@@ -142,6 +144,7 @@ typedef struct Esp32s3IntMatrixState {
     MemoryRegion iomem;
     qemu_irq *outputs[ESP32S3_CPU_COUNT];
     uint8_t irq_map[ESP32S3_CPU_COUNT][ESP32S3_INT_MATRIX_INPUTS];
+    uint8_t nivel[ESP32S3_CPU_COUNT][ESP32S3_INT_MATRIX_INPUTS];
 
     /* properties */
     XtensaCPU *cpu[ESP32S3_CPU_COUNT];
