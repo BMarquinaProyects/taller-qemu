@@ -1,4 +1,4 @@
-# Compila QEMU con las capas de Taller en Linux y Windows, ejecuta las pruebas de humo
+# Compila QEMU con las capas de Taller en Linux y Windows, ejecuta las pruebas de los tres chips
 # y, al etiquetar vX.Y.Z, publica la release con los dos paquetes.
 name: qemu
 
@@ -21,15 +21,11 @@ jobs:
             libglib2.0-dev libpixman-1-dev libslirp-dev libgcrypt20-dev
       - name: Compilar
         run: bash construir.sh
-      - name: Pruebas de humo
-        run: |
-          Q=.trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa
-          python3 pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
-          python3 pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
-          python3 pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
-          python3 pruebas/qemu_prueba.py $Q entrada pruebas/entrada_prueba.flash.bin
-          python3 pruebas/qemu_prueba.py $Q pwm pruebas/pwm_prueba.flash.bin
-          python3 pruebas/qemu_prueba.py $Q analogico pruebas/analogico_prueba.flash.bin
+      - name: Pruebas unitarias
+        run: python3 -m unittest discover -s pruebas -p '*_unitarias.py'
+      # Todos los modos de los tres chips (clásico, C3 y S3); spi_dma se omite sin el firmware de MicroPython.
+      - name: Pruebas en QEMU
+        run: bash pruebas/todas.sh .trabajo/instalar-x86_64-linux-gnu/qemu/bin/qemu-system-xtensa
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-linux
@@ -54,15 +50,11 @@ jobs:
             mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-libiconv mingw-w64-ucrt-x86_64-gettext
       - name: Compilar
         run: bash construir.sh
-      - name: Pruebas de humo
-        run: |
-          Q=.trabajo/instalar-x86_64-w64-mingw32/qemu/bin/qemu-system-xtensa.exe
-          python pruebas/qemu_prueba.py $Q humo pruebas/taller_ok.flash.bin "TALLER-OK arduino"
-          python pruebas/qemu_prueba.py $Q humo pruebas/gpio_prueba.flash.bin "TALLER-OK gpio"
-          python pruebas/qemu_prueba.py $Q puente pruebas/puente_prueba.flash.bin
-          python pruebas/qemu_prueba.py $Q entrada pruebas/entrada_prueba.flash.bin
-          python pruebas/qemu_prueba.py $Q pwm pruebas/pwm_prueba.flash.bin
-          python pruebas/qemu_prueba.py $Q analogico pruebas/analogico_prueba.flash.bin
+      # También el C3 y el S3: hay fallos que solo salen en Windows, donde `long` tiene 32 bits (E-045).
+      - name: Pruebas en QEMU
+        env:
+          PYTHONIOENCODING: utf-8
+        run: bash pruebas/todas.sh .trabajo/instalar-x86_64-w64-mingw32/qemu/bin/qemu-system-xtensa.exe
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-windows
