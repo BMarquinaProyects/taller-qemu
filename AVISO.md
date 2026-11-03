@@ -148,3 +148,13 @@ Cambios de Taller (resumen):
   dummy llevan 2 (DIO) o 4 (QIO) bits por ciclo; `m25p80` los cuenta en bytes. La copia de
   Espressif los convertía como de una sola línea y, en QIO con el IS25LP128 (flash de 16 MiB),
   cada lectura salía desplazada 2 bytes. Prueba `s3_flash_qio` y `s3_flash_qio_unitarias.py`.
+- M-160, FPU del ESP32 y ESP32-S3 (`hw/xtensa/esp32.c` y `esp32s3.c`):
+  `taller_cpu_reset` restaura CPENABLE=0xff después de cada reset de CPU,
+  incluidas PRO, APP y la inicialización previa a cargar ELF. Reproduce el
+  valor del silicio que espera esp-hal; no modifica el reset genérico Xtensa.
+- M-160, BBPLL del S3: `esp32s3_io_read` devuelve el bit 24
+  (`I2C_MST_BBPLL_CAL_DONE`) solo en `I2C_MST_ANA_CONF0` (0x6000E040), para
+  que termine `esp_hal::init`. Las demás lecturas sin modelo siguen a cero.
+  Modos `fpu` y `s3_fpu` con las imágenes Rust aportadas, líneas UART exactas
+  y plazo de 30 s; incluidos en `todas.sh`, con unitarias sin QEMU en
+  `pruebas/fpu_unitarias.py`. Verificación integrada pendiente del revisor.

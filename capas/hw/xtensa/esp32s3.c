@@ -83,6 +83,9 @@
 
 #define TYPE_ESP32S3_CPU XTENSA_CPU_TYPE_NAME("esp32s3")
 
+#define TALLER_I2C_MST_ANA_CONF0       0x6000e040u
+#define TALLER_I2C_MST_BBPLL_CAL_DONE  (1u << 24)
+
 
 enum {
     ESP32S3_MEMREGION_IROM,
@@ -213,6 +216,14 @@ static void esp32s3_cpu_reset(void* opaque, int n, int level)
     }
 }
 
+static void taller_cpu_reset(XtensaCPU *cpu)
+{
+    cpu_reset(CPU(cpu));
+    /* M-160: el silicio sale del reset con CPENABLE=0xff; esp-hal confía
+     * en ese valor para usar la FPU sin habilitarla por excepción. */
+    cpu->env.sregs[CPENABLE] = 0xff;
+}
+
 static void esp32s3_soc_reset(DeviceState *dev)
 {
     Esp32s3SocState *s = ESP32S3_SOC(dev);
@@ -228,12 +239,12 @@ static void esp32s3_soc_reset(DeviceState *dev)
     if (s->requested_reset & ESP32S3_SOC_RESET_PROCPU) {
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
         remove_cpu_watchpoints(&s->cpu[0]);
-        cpu_reset(CPU(&s->cpu[0]));
+        taller_cpu_reset(&s->cpu[0]);
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_APPCPU && (ESP32S3_CPU_COUNT > 1)) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
         remove_cpu_watchpoints(&s->cpu[1]);
-        cpu_reset(CPU(&s->cpu[1]));
+        taller_cpu_reset(&s->cpu[1]);
     }
     s->requested_reset = 0;
 }
@@ -473,6 +484,11 @@ static void esp32s3_soc_realize(DeviceState *dev, Error **errp)
 
 static uint64_t esp32s3_io_read(void *opaque, hwaddr addr, unsigned int size)
 {
+    if (ESP32S3_IO_START_ADDR + addr == TALLER_I2C_MST_ANA_CONF0) {
+        /* M-160: esp_hal::init espera el fin de calibración de la BBPLL.
+         * Los demás registros siguen a cero, incluido el ocupado de rom_i2c_*. */
+        return TALLER_I2C_MST_BBPLL_CAL_DONE;
+    }
 #if ESP32S3_IO_WARNING
     warn_report("[ESP32-S3] Unsupported read to $%08lx, size = %i\n", ESP32S3_IO_START_ADDR + addr, size);
 #endif
@@ -967,7 +983,7 @@ static void esp32s3_machine_init(MachineState *machine)
     /* Need MMU initialized prior to ELF loading,
      * so that ELF gets loaded into virtual addresses
      */
-    cpu_reset(CPU(&ss->cpu[0]));
+    taller_cpu_reset(&ss->cpu[0]);
 
     const char *load_elf_filename = NULL;
     if (machine->firmware) {

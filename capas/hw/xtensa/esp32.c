@@ -151,6 +151,14 @@ static void esp32_timg_sys_reset(void* opaque, int n, int level)
     }
 }
 
+static void taller_cpu_reset(XtensaCPU *cpu)
+{
+    cpu_reset(CPU(cpu));
+    /* M-160: el silicio sale del reset con CPENABLE=0xff; esp-hal confía
+     * en ese valor para usar la FPU sin habilitarla por excepción. */
+    cpu->env.sregs[CPENABLE] = 0xff;
+}
+
 static void esp32_soc_reset(DeviceState *dev)
 {
     Esp32SocState *s = ESP32_SOC(dev);
@@ -203,12 +211,12 @@ static void esp32_soc_reset(DeviceState *dev)
     if (s->requested_reset & ESP32_SOC_RESET_PROCPU) {
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
         remove_cpu_watchpoints(&s->cpu[0]);
-        cpu_reset(CPU(&s->cpu[0]));
+        taller_cpu_reset(&s->cpu[0]);
     }
     if (s->requested_reset & ESP32_SOC_RESET_APPCPU) {
         xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
         remove_cpu_watchpoints(&s->cpu[1]);
-        cpu_reset(CPU(&s->cpu[1]));
+        taller_cpu_reset(&s->cpu[1]);
     }
     s->requested_reset = 0;
 }
@@ -905,7 +913,7 @@ static void esp32_machine_init(MachineState *machine)
     /* Need MMU initialized prior to ELF loading,
      * so that ELF gets loaded into virtual addresses
      */
-    cpu_reset(CPU(&ss->cpu[0]));
+    taller_cpu_reset(&ss->cpu[0]);
 
     const char *load_elf_filename = NULL;
     if (machine->firmware) {

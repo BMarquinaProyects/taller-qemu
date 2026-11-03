@@ -9,6 +9,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> i2c <i2c_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> armado <armado_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> rmt <rmt_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> fpu <fpu_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> spi_dma <micropython.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_gpio <c3_gpio_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_pwm <c3_pwm_prueba.flash.bin>
@@ -22,6 +23,7 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_i2c <s3_i2c_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_rmt <s3_rmt_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_spi <s3_spi_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_fpu <s3_fpu_prueba.flash.bin>
 
 Sale con 0 si todo cuadra. Sin dependencias fuera de la biblioteca estándar.
 """
@@ -236,6 +238,75 @@ def humo(qemu: str, firmware: str, marca: str) -> int:
     ok = marca in texto
     print(("OK " if ok else "FALLO ") + marca, "\n" + texto[-600:] if not ok else "")
     return 0 if ok else 1
+
+
+def comprobar_fpu(texto: str) -> list[str]:
+    """Exige CPENABLE=0xff y resultados FPU exactos, en líneas completas y ordenadas."""
+    errores = []
+    posiciones = []
+    for linea in ("TALLER fpu cpenable=0xff", "TALLER-OK fpu 105 -21 3"):
+        coincidencias = list(re.finditer(r"^" + re.escape(linea) + r"\r?\n", texto, re.MULTILINE))
+        if len(coincidencias) != 1:
+            errores.append(f"sin línea única {linea}")
+        else:
+            posiciones.append(coincidencias[0].start())
+    if posiciones != sorted(posiciones):
+        errores.append("líneas FPU fuera de orden")
+    if "TALLER-FALLO" in texto or "Guru Meditation" in texto:
+        errores.append("el firmware falló")
+    return errores
+
+
+def fpu_soc(qemu: str, firmware: str, chip: str) -> int:
+    """M-160: espera la línea FPU completa con un plazo UART total de 30 s."""
+    modo = "s3_fpu" if chip == "s3" else "fpu"
+    tmp, proc, p_uart, p_puente = (lanzar_s3(qemu, firmware) if chip == "s3" else
+                                 lanzar(qemu, firmware, con_puente=False))
+    s_uart = s_puente = None
+    texto = ""
+    try:
+        if p_puente is not None:
+            s_puente = conectar(p_puente, proc)
+        s_uart = conectar(p_uart, proc)
+        fin = time.monotonic() + 30
+        while (restante := fin - time.monotonic()) > 0:
+            s_uart.settimeout(restante)
+            try:
+                trozo = s_uart.recv(4096)
+            except socket.timeout:
+                break
+            except OSError as error:
+                texto += "\nTALLER-FALLO UART: " + str(error)
+                break
+            if not trozo:
+                break
+            texto += trozo.decode(errors="replace")
+            # La marca puede llegar separada de los resultados o del salto de línea.
+            if re.search(r"^TALLER-OK fpu[^\n]*\n", texto, re.MULTILINE) or "TALLER-FALLO" in texto:
+                break
+    finally:
+        proc.kill()
+        proc.wait()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_fpu(texto)
+    for error in errores:
+        print("FALLO", error)
+    print(f"FALLO {modo}\n" + texto if errores else
+          f"OK {modo}: CPENABLE=0xff; FPU 105 -21 3")
+    return 1 if errores else 0
+
+
+def fpu(qemu: str, firmware: str) -> int:
+    return fpu_soc(qemu, firmware, "esp32")
+
+
+def s3_fpu(qemu: str, firmware: str) -> int:
+    return fpu_soc(qemu, firmware, "s3")
 
 
 def leer_tramas(sock: socket.socket, tramas: list, parar: threading.Event) -> None:
@@ -1477,7 +1548,7 @@ def s3_analogico(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
-    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi", "s3_flash_qio"):
+    if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi", "s3_fpu", "s3_flash_qio"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo == "c3_gpio":
         sys.exit(c3_gpio(qemu, sys.argv[3]))
@@ -1505,6 +1576,8 @@ if __name__ == "__main__":
         sys.exit(armado(qemu, sys.argv[3]))
     if modo == "rmt":
         sys.exit(rmt(qemu, sys.argv[3]))
+    if modo == "fpu":
+        sys.exit(fpu(qemu, sys.argv[3]))
     if modo == "spi_dma":
         sys.exit(spi_dma(qemu, sys.argv[3]))
     sys.exit(puente(qemu, sys.argv[3]))

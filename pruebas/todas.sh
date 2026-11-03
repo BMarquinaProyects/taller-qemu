@@ -18,6 +18,7 @@ if ! python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin;
   python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin || r=1
 fi
 python3 pruebas/qemu_prueba.py "$Q" rmt pruebas/rmt_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q" fpu pruebas/fpu_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" humo pruebas/rmt_prueba.flash.bin "TALLER-OK rmt" || r=1
 MPY="${MICROPYTHON_FLASH:-pruebas/micropython.flash.bin}"
 if [[ -f "$MPY" || -n "${MICROPYTHON_FLASH:-}" ]]; then
@@ -38,4 +39,5 @@ python3 pruebas/qemu_prueba.py "$Q" s3_i2c pruebas/s3_i2c_prueba.flash.bin || r=
 python3 pruebas/qemu_prueba.py "$Q" s3_rmt pruebas/s3_rmt_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" s3_flash_qio pruebas/s3_flash_qio_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" s3_spi pruebas/s3_spi_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q" s3_fpu pruebas/s3_fpu_prueba.flash.bin || r=1
 exit $r

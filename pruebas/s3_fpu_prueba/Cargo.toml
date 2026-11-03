@@ -1,0 +1,26 @@
+# Firmware de la prueba s3_fpu (M-160). Se compila con el Rust de Xtensa de espup:
+#   cargo build --release && espflash save-image --chip esp32s3 --merge --flash-mode dio \
+#     --flash-size 4mb target/xtensa-esp32s3-none-elf/release/s3_fpu_prueba ../s3_fpu_prueba.flash.bin
+# y se rellena con 0xFF hasta 4 MiB.
+[package]
+name = "s3_fpu_prueba"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "s3_fpu_prueba"
+path = "../fpu_prueba/src/main.rs"
+
+[workspace]
+
+[dependencies]
+esp-hal = { version = "~1.2.2", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3"] }
+critical-section = "1.2.0"
+esp-backtrace = { version = "0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+esp-println = { version = "0.18.0", default-features = false, features = ["esp32s3", "uart", "critical-section"] }
+
+[profile.release]
+opt-level = "s"
+debug = false
+codegen-units = 1
