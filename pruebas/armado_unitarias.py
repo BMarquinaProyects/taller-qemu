@@ -10,7 +10,7 @@ import qemu_prueba
 
 
 class PruebaArmado(unittest.TestCase):
-    def compilar_y_ejecutar(self, fuente, tmp):
+    def compilar_y_ejecutar(self, fuente, tmp, opciones=()):
         cc = (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang") or
               shutil.which("cl"))
         if cc is None:
@@ -26,7 +26,7 @@ class PruebaArmado(unittest.TestCase):
             comando = [cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
                        "-Wno-unused-parameter", "-I", str(raiz / "capas/include"),
                        "-I", tmp, str(fuente), "-o", str(exe)]
-        subprocess.run(comando, check=True)
+        subprocess.run(comando + list(opciones), check=True)
         subprocess.run([str(exe)], check=True)
 
     def setUp(self):
@@ -103,20 +103,29 @@ class PruebaArmado(unittest.TestCase):
             self.compilar_y_ejecutar(raiz / "pruebas/armado_logica.c", tmp)
 
     def test_gpio_clasico_real_con_temporizadores_tardios(self):
+        self.comprobar_gpio_real("esp32")
+
+    def test_gpio_s3_real_con_cuanto_y_trenes_solapados(self):
+        self.comprobar_gpio_real("esp32s3")
+
+    def comprobar_gpio_real(self, chip):
         raiz = Path(__file__).resolve().parents[1]
-        cab = (raiz / "capas/include/hw/gpio/esp32_gpio.h").read_text(encoding="utf-8")
+        cab = (raiz / f"capas/include/hw/gpio/{chip}_gpio.h").read_text(encoding="utf-8")
         cab = "\n".join(l for l in cab.splitlines()
                         if not l.startswith(("#include", "#pragma")))
-        fuente = (raiz / "capas/hw/gpio/esp32_gpio.c").read_text(encoding="utf-8")
-        modelo = fuente[fuente.index("/* Taller: el GPIO del chip"):
-                        fuente.index("static const MemoryRegionOps")]
+        fuente = (raiz / f"capas/hw/gpio/{chip}_gpio.c").read_text(encoding="utf-8")
+        inicio = ("/* Taller: el GPIO del chip" if chip == "esp32" else
+                  "static bool esp32s3_gpio_pin_valido")
+        # Incluye init/reset/finalize reales; solo QOM, reloj y E/S son dobles.
+        modelo = fuente[fuente.index(inicio):
+                        fuente.index(f"static Property {chip}_gpio_properties")]
         plantilla = (raiz / "pruebas/armado_gpio_modelo.c").read_text(encoding="utf-8")
         codigo = plantilla.replace("/* CABECERA_REAL */", cab).replace(
             "/* MODELO_REAL */", modelo)
         with tempfile.TemporaryDirectory() as tmp:
             c = Path(tmp) / "modelo.c"
             c.write_text(codigo, encoding="utf-8")
-            self.compilar_y_ejecutar(c, tmp)
+            self.compilar_y_ejecutar(c, tmp, ["-DMODELO_S3"] if chip == "esp32s3" else [])
 
     def test_receptor_descarta_trama_excesiva_entera_y_conserva_siguiente(self):
         raiz = Path(__file__).resolve().parents[1]

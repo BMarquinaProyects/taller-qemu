@@ -70,9 +70,28 @@ static void esp32_gpio_paso_armado(void *opaque)
     /* Incluye esperas cero y pasos vencidos, siempre con un máximo de 200. */
     while (taller_armado_avanzar(r, ahora_ns, &pin, &nivel)) {
         esp32_gpio_fijar_entrada(pin, nivel); /* misma ruta que ENTRADA */
+        if (!r->sonando) {
+            t->gpio->armado.fin_cola_ns = taller_armado_plazo(
+                ahora_ns, TALLER_ARMADO_CUANTO_COLA_NS);
+        }
     }
     if (r->sonando) {
         timer_mod_ns(t->timer, r->proximo_ns);
+    }
+}
+
+/* M-157: acotar turnos durante preparación, trenes y cola del último flanco.
+ * Si el tick coincide con el último paso, antes ve el tren y deja +1 us
+ * pendiente; después ve la cola. Entre ticks ya hay uno pendiente.
+ * Diagnóstico confirmado: docs/m157-armado.md, sección Conclusión. */
+static void esp32_gpio_cuanto_armado(void *opaque)
+{
+    Esp32GpioState *s = opaque;
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (taller_armado_cuanto_activo(&s->armado, ahora_ns)) {
+        timer_mod_ns(s->cuanto_armado,
+                     taller_armado_plazo(ahora_ns, TALLER_ARMADO_CUANTO_NS));
     }
 }
 
@@ -89,6 +108,10 @@ static void esp32_gpio_observar_armados(Esp32GpioState *s)
             /* Aplica el primer paso aquí si su espera es cero. */
             esp32_gpio_paso_armado(&s->trenes[i]);
         }
+    }
+    if (taller_armado_cuanto_activo(&s->armado, ahora_ns) &&
+        !timer_pending(s->cuanto_armado)) {
+        esp32_gpio_cuanto_armado(s);
     }
 }
 
@@ -224,6 +247,7 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_del(s->trenes[i].timer);
     }
+    timer_del(s->cuanto_armado);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32_GPIO_SENAL_SOFTWARE;
@@ -252,6 +276,8 @@ static void esp32_gpio_init(Object *obj)
         s->trenes[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          esp32_gpio_paso_armado, &s->trenes[i]);
     }
+    s->cuanto_armado = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   esp32_gpio_cuanto_armado, s);
 
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
@@ -270,6 +296,8 @@ static void esp32_gpio_finalize(Object *obj)
         timer_del(s->trenes[i].timer);
         timer_free(s->trenes[i].timer);
     }
+    timer_del(s->cuanto_armado);
+    timer_free(s->cuanto_armado);
     if (gpio_del_chip == s) {
         gpio_del_chip = NULL;
     }

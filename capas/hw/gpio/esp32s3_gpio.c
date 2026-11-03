@@ -65,9 +65,28 @@ static void esp32s3_gpio_paso_armado(void *opaque)
 
     while (taller_armado_avanzar(r, ahora_ns, &pin, &nivel)) {
         esp32s3_gpio_fijar_entrada(t->gpio, pin, nivel);
+        if (!r->sonando) {
+            t->gpio->armado.fin_cola_ns = taller_armado_plazo(
+                ahora_ns, TALLER_ARMADO_CUANTO_COLA_NS);
+        }
     }
     if (r->sonando) {
         timer_mod_ns(t->timer, r->proximo_ns);
+    }
+}
+
+/* M-157: acotar turnos durante preparación, trenes y cola del último flanco.
+ * Si el tick coincide con el último paso, antes ve el tren y deja +1 us
+ * pendiente; después ve la cola. Entre ticks ya hay uno pendiente.
+ * Diagnóstico confirmado: docs/m157-armado.md, sección Conclusión. */
+static void esp32s3_gpio_cuanto_armado(void *opaque)
+{
+    ESP32S3GPIOState *s = opaque;
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (taller_armado_cuanto_activo(&s->armado, ahora_ns)) {
+        timer_mod_ns(s->cuanto_armado,
+                     taller_armado_plazo(ahora_ns, TALLER_ARMADO_CUANTO_NS));
     }
 }
 
@@ -83,6 +102,10 @@ static void esp32s3_gpio_observar_armados(ESP32S3GPIOState *s)
                                   ahora_ns);
             esp32s3_gpio_paso_armado(&s->trenes[i]);
         }
+    }
+    if (taller_armado_cuanto_activo(&s->armado, ahora_ns) &&
+        !timer_pending(s->cuanto_armado)) {
+        esp32s3_gpio_cuanto_armado(s);
     }
 }
 
@@ -201,6 +224,7 @@ static void esp32s3_gpio_reset_hold(Object *obj, ResetType type)
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_del(s->trenes[i].timer);
     }
+    timer_del(s->cuanto_armado);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (cambio) {
         taller_puente_gpio(0, 0);
@@ -218,6 +242,8 @@ static void esp32s3_gpio_init(Object *obj)
         s->trenes[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                         esp32s3_gpio_paso_armado, &s->trenes[i]);
     }
+    s->cuanto_armado = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   esp32s3_gpio_cuanto_armado, s);
     object_property_set_int(obj, "strap_mode", ESP32S3_STRAP_MODE_FLASH_BOOT,
                             &error_fatal);
     memory_region_init_io(&s->iomem, obj, &esp32s3_gpio_ops, s,
@@ -232,6 +258,7 @@ static void esp32s3_gpio_finalize(Object *obj)
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_free(s->trenes[i].timer);
     }
+    timer_free(s->cuanto_armado);
 }
 
 static Property esp32s3_gpio_properties[] = {

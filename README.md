@@ -775,9 +775,21 @@ python3 -m unittest discover -s pruebas -p '*_unitarias.py'
 
 ## Prueba de trenes armados
 
-Investigación de los fallos intermitentes y pruebas de atención tardía:
-[`docs/m157-armado.md`](docs/m157-armado.md). Los plazos ya son acumulativos;
-la causa exacta de CI sigue pendiente y se mantiene la tolerancia de ±3 µs.
+Diagnóstico confirmado de los fallos intermitentes (E-054, M-157) y pruebas:
+[`docs/m157-armado.md`](docs/m157-armado.md#conclusión). Los plazos siguen siendo
+acumulativos. Con `-icount`, las dos CPU del clásico y del S3 ejecutan por turnos:
+la CPU0 puede retrasar el sondeo de la CPU1 aunque el flanco llegue puntual.
+Su GPIO mantiene un temporizador virtual de 1 µs en tres fases: preparación
+acotada, tren y cola. La preparación empieza cuando un pin armado y sin tren
+queda al nivel contrario al flanco de disparo; dura menos de `minimo_ns + 20 µs`
+desde ese cambio. Evita que un turno largo de CPU0 estire un pulso corto de
+CPU1 y lo convierta en disparo válido. Pasado ese margen, el umbral ya se cumple
+y se apaga: un pin fijo, incluso una entrada con pull-up, no lo mantiene siempre.
+Durante el tren acota el retraso del sondeo de sus flancos. La cola de 20 µs tras
+el último paso permite observar el flanco que cierra una medida, como la bajada
+de ECHO que mide `pulseIn`, aunque CPU0 esté ocupada.
+Un tren nuevo dentro de la cola la prolonga al terminar; el reset la anula.
+El C3 tiene una CPU y conserva su comportamiento. La tolerancia sigue siendo ±3 µs.
 
 `pruebas/armado_prueba/armado_prueba.ino` configura TRIG bajo, anuncia
 `ARMADO-LISTO` y espera un segundo al inicio para que el script arme ambos trenes
@@ -796,7 +808,15 @@ inicial de GPIO5: pasa de entrada (conducido alto) a salida baja.
 
 El modo `armado` exige además `TALLER-OK armado`, exactamente dos DISPARO del pin 4
 y uno del pin 5, sin otros DISPARO ni tiempos decrecientes. `pruebas/todas.sh`
-incluye este modo; todos los modos previos admiten HOLA 6.
+ejecuta este modo con ambas imágenes, sin reintentos; todos los modos previos
+admiten HOLA 6.
+
+`pruebas/armado_ocupado/armado_ocupado.ino` repite la misma prueba y añade una
+tarea fijada a CPU0 que nunca cede su turno. Reproduce de forma determinista
+el fallo del reparto de `icount`: antes del arreglo daba `DHT=80,65,60,60`
+y `ECO=1083`, frente a `80,80,50,70` y `1163..1169`. Usa el mismo modo `armado`
+y sus comprobaciones, para que la regresión no dependa de coincidir con el tick
+ocasional de FreeRTOS. Su imagen ya compilada es `pruebas/armado_ocupado.flash.bin`.
 
 Para A se mide con `esp_cpu_get_cycle_count()` a 240 MHz (comprobado con
 `static_assert`), lectura directa del registro GPIO y las interrupciones locales
@@ -821,18 +841,42 @@ Copy-Item "$compilacion\armado_prueba.ino.merged.bin" pruebas/armado_prueba.flas
 Remove-Item -LiteralPath $compilacion -Recurse -Force
 ```
 
+Para regenerar la imagen completa de `armado_ocupado`, también de 4 MiB,
+con la misma CLI, core y FQBN:
+
+```powershell
+$cli = "$env:APPDATA\dev.taller.app\arduino-cli\1.5.1\arduino-cli.exe"
+$config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
+$compilacion = Join-Path (Get-Location) '.trabajo\armado-ocupado-compilacion'
+& $cli --config-file $config compile --fqbn esp32:esp32:esp32:FlashMode=dio `
+  --build-path $compilacion pruebas/armado_ocupado
+if ($LASTEXITCODE -ne 0) { throw 'Falló la compilación de armado_ocupado' }
+Copy-Item "$compilacion\armado_ocupado.ino.merged.bin" pruebas/armado_ocupado.flash.bin
+Remove-Item -LiteralPath $compilacion -Recurse -Force
+```
+
 ```sh
 python3 -m unittest discover -s pruebas -p '*_unitarias.py'
 python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa armado pruebas/armado_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa armado pruebas/armado_ocupado.flash.bin
 bash pruebas/todas.sh /ruta/qemu-system-xtensa
 ```
 
 `armado_unitarias.py` compila y ejecuta la lógica C pura de `taller_armado.h`,
 incluyendo rearme/desarmado durante un tren, mínimo inclusivo, 200 pasos, esperas
-cero, GPIO39, ocupación de ranuras y reset. Compila también el receptor real
-aislado de QOM/chardev para comprobar el descarte de tramas excesivas y fragmentadas.
-Requiere `cc`, `gcc` o `clang` (en Windows sin compilador omite esos dos casos;
-ejecutar la suite en WSL). Las demás pruebas del verificador usan solo Python.
+cero, GPIO39, ocupación de ranuras, reset y consulta de trenes sonando. Comprueba
+preparación de ambas polaridades, límite exacto de `minimo_ns + cola`, pulso
+corto sin disparo, enlace con el tren y margen mayor que 32 bits. Ejecuta
+también los GPIO reales clásico y S3 con dobles de reloj y temporizadores:
+plazos acumulados, cuanto a +1 µs desde preparación o disparo, parada de
+preparación al vencer o rechazar un pulso de 5 µs, continuidad hasta el tren,
+cola de 20 µs, ambos órdenes de callbacks
+coincidentes y último paso entre ticks, dos trenes solapados, prolongación de
+la cola con otro tren, parada, reset y liberación. Compila el receptor real
+aislado de QOM/chardev para comprobar el descarte de tramas excesivas y
+fragmentadas. Requiere `cc`, `gcc`, `clang`
+o `cl` (en Windows, desde consola de desarrollo de Visual Studio); sin
+compilador omite las pruebas C. Las del verificador usan solo Python.
 
 ## RMT TX y prueba de NeoPixel
 

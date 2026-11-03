@@ -60,6 +60,7 @@ typedef struct Esp32GpioState {
     uint64_t drenador_abierto;                         /* bit n = PAD_DRIVER del pin n */
     TallerArmado armado;
     Esp32GpioTemporizadorArmado trenes[TALLER_ARMADO_RANURAS];
+    QEMUTimer *cuanto_armado;
 } Esp32GpioState;
 
 /* Taller: nivel que llega desde fuera a un pin de entrada (botones, sensores…). */

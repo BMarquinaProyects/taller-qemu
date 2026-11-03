@@ -51,6 +51,7 @@ typedef struct ESP32S3GPIOState {
     uint32_t seleccion_salida[ESP32S3_GPIO_PINES];
     TallerArmado armado;
     ESP32S3GpioTren trenes[TALLER_ARMADO_RANURAS];
+    QEMUTimer *cuanto_armado;
 } ESP32S3GPIOState;
 
 void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, bool nivel);

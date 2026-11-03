@@ -22,6 +22,7 @@ static void timer_mod_ns(QEMUTimer *t, int64_t plazo)
     t->plazo = plazo;
 }
 static void timer_del(QEMUTimer *t) { t->pendiente = false; }
+static bool timer_pending(const QEMUTimer *t) { return t->pendiente; }
 static void taller_puente_gpio(uint64_t out, uint64_t enable)
 {
     muestras++;
@@ -38,11 +39,13 @@ static void taller_puente_disparo(uint8_t pin, int64_t t_ns)
 /* MODELO_REAL */
 static ESP32S3GPIOState gpio;
 static QEMUTimer timers[TALLER_ARMADO_RANURAS];
+static QEMUTimer cuanto;
 static void escribir(hwaddr a, uint32_t v) { esp32s3_gpio_write(&gpio, a, v, 4); }
 static uint32_t leer(hwaddr a) { return esp32s3_gpio_read(&gpio, a, 4); }
 int main(void)
 {
     gpio.strap_mode = 4;
+    gpio.cuanto_armado = &cuanto;
     taller_armado_iniciar(&gpio.armado, 0);
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         gpio.trenes[i] = (ESP32S3GpioTren){&timers[i], &gpio, i};

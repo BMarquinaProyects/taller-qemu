@@ -197,6 +197,142 @@ static void ranuras_y_reloj(void)
     assert(s.ranuras[0].proximo_ns == INT64_MAX);
 }
 
+static void alguno_sonando(void)
+{
+    TallerArmado s;
+    uint8_t desarmado[9], pin;
+    bool nivel;
+
+    taller_armado_iniciar(&s, 0);
+    assert(!taller_armado_alguno_sonando(&s));
+    assert(taller_armado_recibir(&s, dht, sizeof(dht)));
+    assert(!taller_armado_alguno_sonando(&s));
+    taller_armado_observar(&s, 0, 1ull << 4, 0);
+    assert(taller_armado_observar(&s, 0, 0, 800000) == 1);
+    assert(taller_armado_alguno_sonando(&s));
+    memcpy(desarmado, dht, sizeof(desarmado));
+    desarmado[7] = 0;
+    assert(taller_armado_recibir(&s, desarmado, sizeof(desarmado)));
+    assert(!s.ranuras[0].armada && taller_armado_alguno_sonando(&s));
+    assert(taller_armado_avanzar(&s.ranuras[0], 830000, &pin, &nivel));
+    assert(taller_armado_alguno_sonando(&s));
+    assert(taller_armado_avanzar(&s.ranuras[0], 910000, &pin, &nivel));
+    assert(!taller_armado_alguno_sonando(&s));
+
+    /* Recorre todas las ranuras, incluso las desarmadas que aún suenan. */
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        s.ranuras[i].sonando = true;
+        assert(taller_armado_alguno_sonando(&s));
+        s.ranuras[i].sonando = false;
+        assert(!taller_armado_alguno_sonando(&s));
+    }
+    s.ranuras[0].sonando = s.ranuras[7].sonando = true;
+    s.ranuras[0].sonando = false;
+    assert(taller_armado_alguno_sonando(&s));
+    taller_armado_reiniciar(&s, 1000000);
+    assert(!taller_armado_alguno_sonando(&s));
+}
+
+static void condicion_del_cuanto_y_cola(void)
+{
+    TallerArmado s;
+    taller_armado_iniciar(&s, 0);
+    assert(!taller_armado_cuanto_activo(&s, 0));
+    assert(taller_armado_recibir(&s, dht, sizeof(dht)));
+    assert(!taller_armado_cuanto_activo(&s, INT64_C(5000000000)));
+    s.fin_cola_ns = INT64_C(5000020000);
+    assert(taller_armado_cuanto_activo(&s, INT64_C(5000019999)));
+    assert(!taller_armado_cuanto_activo(&s, INT64_C(5000020000)));
+    assert(!taller_armado_cuanto_activo(&s, INT64_C(5000020001)));
+    /* Un tren activo mantiene el cuanto incluso con la cola anterior vencida. */
+    s.ranuras[7].sonando = true;
+    assert(taller_armado_cuanto_activo(&s, INT64_C(5000030000)));
+    s.ranuras[7].sonando = false;
+    s.fin_cola_ns = taller_armado_plazo(INT64_MAX - 10000,
+                                       TALLER_ARMADO_CUANTO_COLA_NS);
+    assert(s.fin_cola_ns == INT64_MAX);
+    assert(taller_armado_cuanto_activo(&s, INT64_MAX - 1));
+    assert(!taller_armado_cuanto_activo(&s, INT64_MAX));
+    taller_armado_reiniciar(&s, INT64_C(5000010000));
+    assert(s.fin_cola_ns == 0);
+    assert(!taller_armado_cuanto_activo(&s, INT64_C(5000010000)));
+    assert(s.ranuras[0].armada);
+}
+
+static void preparacion_del_cuanto(bool subida)
+{
+    uint8_t carga[] = {5, 0, 0x40, 0x1f, 0, 0, 19, 1, 0,
+                       0x30, 0x75, 0, 0, 0}; /* mínimo 8 us; paso a +30 us. */
+    const uint64_t bit = UINT64_C(1) << 5;
+    const uint64_t reposo = subida ? bit : 0;
+    const uint64_t preparacion = subida ? 0 : bit;
+    const int64_t base_ns = INT64_C(5000000000);
+    TallerArmado s, antes;
+    uint8_t pin;
+    bool nivel;
+
+    carga[1] = subida;
+    taller_armado_iniciar(&s, base_ns);
+    assert(!taller_armado_observar(&s, preparacion, bit, base_ns));
+    assert(!taller_armado_cuanto_activo(&s, base_ns)); /* Sin armar no cuenta. */
+    assert(taller_armado_recibir(&s, carga, sizeof(carga)));
+    assert(taller_armado_cuanto_activo(&s, base_ns));
+    antes = s;
+    assert(!taller_armado_cuanto_activo(&s, base_ns - 1));
+    assert(taller_armado_cuanto_activo(&s, base_ns + 27999));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 28000));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 28001));
+    assert(!memcmp(&s, &antes, sizeof(s))); /* Consulta pura. */
+
+    /* Volver a reposo tras solo 5 us cancela preparación, sin disparar. */
+    assert(!taller_armado_observar(&s, reposo, bit, base_ns + 5000));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 5000));
+    s.fin_cola_ns = base_ns + 20000;
+    assert(taller_armado_cuanto_activo(&s, base_ns + 5000));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 20000));
+
+    /* El mínimo inclusivo enlaza preparación con tren sin perder actividad. */
+    assert(!taller_armado_observar(&s, preparacion, bit, base_ns + 100000));
+    assert(taller_armado_cuanto_activo(&s, base_ns + 107999));
+    assert(taller_armado_observar(&s, reposo, bit, base_ns + 108000) == 1);
+    assert(s.ranuras[0].sonando);
+    assert(taller_armado_cuanto_activo(&s, base_ns + 108000));
+    /* Durante el tren, cambiar el pin no prepara otro disparo. */
+    assert(!taller_armado_observar(&s, preparacion, bit, base_ns + 109000));
+    assert(!taller_armado_observar(&s, reposo, bit, base_ns + 110000));
+    assert(taller_armado_avanzar(&s.ranuras[0], base_ns + 138000, &pin, &nivel));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 138000));
+    /* Desarmar durante preparación apaga el cuanto. */
+    assert(!taller_armado_observar(&s, preparacion, bit, base_ns + 140000));
+    carga[7] = 0;
+    assert(taller_armado_recibir(&s, carga, 9));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 140000));
+    taller_armado_reiniciar(&s, base_ns + 141000);
+    assert(!taller_armado_cuanto_activo(&s, base_ns + 141000));
+}
+
+static void margen_de_preparacion_de_64_bits(void)
+{
+    uint8_t carga[] = {48, 1, 0xff, 0xff, 0xff, 0xff, 47, 1, 0,
+                       0x30, 0x75, 0, 0, 0};
+    const int64_t base_ns = INT64_C(5000000000);
+    TallerArmado s;
+
+    taller_armado_iniciar(&s, base_ns);
+    assert(taller_armado_recibir(&s, carga, sizeof(carga)));
+    assert(!taller_armado_observar(&s, 0, UINT64_C(1) << 48, base_ns));
+    /* 0xffffffff + 20000 = 4294987295; la suma no cabe en 32 bits. */
+    assert(taller_armado_cuanto_activo(&s, base_ns + INT64_C(4294987294)));
+    assert(!taller_armado_cuanto_activo(&s, base_ns + INT64_C(4294987295)));
+    taller_armado_reiniciar(&s, INT64_MAX - 100000);
+    assert(!taller_armado_observar(&s, 0, UINT64_C(1) << 48,
+                                   INT64_MAX - 100000));
+    assert(taller_armado_cuanto_activo(&s, INT64_MAX));
+    taller_armado_reiniciar(&s, INT64_MAX);
+    assert(s.ranuras[0].armada);
+    assert(!taller_armado_cuanto_activo(&s, INT64_MAX));
+}
+
 int main(void)
 {
     flancos_y_pasos();
@@ -204,6 +340,11 @@ int main(void)
     plazos_del_dht_con_atencion_tardia();
     validacion_atomica();
     ranuras_y_reloj();
-    puts("OK lógica C: flancos, pasos, rearme, validación, ranuras y reloj");
+    alguno_sonando();
+    condicion_del_cuanto_y_cola();
+    preparacion_del_cuanto(false);
+    preparacion_del_cuanto(true);
+    margen_de_preparacion_de_64_bits();
+    puts("OK lógica C: flancos, pasos, rearme, validación, reloj, preparación y cola");
     return 0;
 }

@@ -16,6 +16,8 @@
 #define TALLER_ARMADO_PASOS 200
 #define TALLER_ARMADO_CARGA_MAX (9 + 5 * TALLER_ARMADO_PASOS)
 #define TALLER_ARMADO_MASCARA ((1ull << TALLER_ARMADO_PINES) - 1)
+#define TALLER_ARMADO_CUANTO_NS INT64_C(1000)
+#define TALLER_ARMADO_CUANTO_COLA_NS INT64_C(20000)
 
 typedef struct TallerArmadoPaso {
     uint32_t espera_ns;
@@ -43,9 +45,43 @@ typedef struct TallerArmadoRanura {
 
 typedef struct TallerArmado {
     uint64_t conducido;
+    int64_t fin_cola_ns;
     int64_t cambio_ns[TALLER_ARMADO_PINES];
     TallerArmadoRanura ranuras[TALLER_ARMADO_RANURAS];
 } TallerArmado;
+
+static inline bool taller_armado_alguno_sonando(const TallerArmado *s)
+{
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        if (s->ranuras[i].sonando) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool taller_armado_cuanto_activo(const TallerArmado *s,
+                                              int64_t ahora_ns)
+{
+    if (taller_armado_alguno_sonando(s) || ahora_ns < s->fin_cola_ns) {
+        return true;
+    }
+    for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
+        const TallerArmadoRanura *r = &s->ranuras[i];
+        const TallerArmadoPrograma *p = &r->programa;
+        uint64_t bit = UINT64_C(1) << p->pin_disparo;
+        int64_t margen_ns = (int64_t)p->minimo_ns + TALLER_ARMADO_CUANTO_COLA_NS;
+
+        /* Acotar la medida previa; un nivel fijo no mantiene el cuanto. */
+        if (r->armada && !r->sonando &&
+            !!(s->conducido & bit) != p->subida &&
+            ahora_ns >= s->cambio_ns[p->pin_disparo] &&
+            ahora_ns - s->cambio_ns[p->pin_disparo] < margen_ns) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static inline uint32_t taller_armado_u32(const uint8_t *p)
 {
@@ -122,6 +158,7 @@ static inline bool taller_armado_recibir(TallerArmado *s, const uint8_t *datos,
 static inline void taller_armado_reiniciar(TallerArmado *s, int64_t ahora_ns)
 {
     s->conducido = TALLER_ARMADO_MASCARA;
+    s->fin_cola_ns = 0;
     for (unsigned pin = 0; pin < TALLER_ARMADO_PINES; pin++) {
         s->cambio_ns[pin] = ahora_ns;
     }
