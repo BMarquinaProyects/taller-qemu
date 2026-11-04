@@ -80,6 +80,47 @@ int esp32s3_gpio_pin_de_senal(void *opaque, int senal)
     return -1;
 }
 
+/* ENTRADA_TREN (v8): cada paso aplica su nivel por la misma ruta que ENTRADA. */
+static void esp32s3_gpio_paso_tren(void *opaque)
+{
+    ESP32S3GpioTren *t = opaque;
+    TallerTrenRanura *r = &t->gpio->tren.ranuras[t->indice];
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint8_t pin, nivel;
+
+    while (taller_tren_avanzar(r, ahora_ns, &pin, &nivel)) {
+        esp32s3_gpio_fijar_entrada(t->gpio, pin, nivel);
+    }
+    if (r->activa) {
+        timer_mod_ns(t->timer, r->proximo_ns);
+    }
+}
+
+void esp32s3_gpio_tren_entrada(ESP32S3GPIOState *s, const uint8_t *datos, size_t largo)
+{
+    int cancelada;
+    int ranura = taller_tren_recibir(&s->tren, datos, largo, ESP32S3_GPIO_MASCARA,
+                                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                     &cancelada);
+
+    if (cancelada >= 0) {
+        timer_del(s->temporizadores_tren[cancelada].timer);
+    }
+    if (ranura >= 0) {
+        timer_del(s->temporizadores_tren[ranura].timer);
+        esp32s3_gpio_paso_tren(&s->temporizadores_tren[ranura]);
+    }
+}
+
+void esp32s3_gpio_cancelar_tren(ESP32S3GPIOState *s, uint8_t pin)
+{
+    int ranura = taller_tren_cancelar(&s->tren, pin);
+
+    if (ranura >= 0) {
+        timer_del(s->temporizadores_tren[ranura].timer);
+    }
+}
+
 static void esp32s3_gpio_paso_armado(void *opaque)
 {
     ESP32S3GpioTren *t = opaque;
@@ -279,6 +320,10 @@ static void esp32s3_gpio_reset_hold(Object *obj, ResetType type)
         timer_del(s->trenes[i].timer);
     }
     timer_del(s->cuanto_armado);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        timer_del(s->temporizadores_tren[i].timer);
+    }
+    taller_tren_reiniciar(&s->tren);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (cambio) {
         taller_puente_gpio(0, 0);
@@ -298,6 +343,14 @@ static void esp32s3_gpio_init(Object *obj)
     }
     s->cuanto_armado = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    esp32s3_gpio_cuanto_armado, s);
+    taller_tren_iniciar(&s->tren);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        s->temporizadores_tren[i].gpio = s;
+        s->temporizadores_tren[i].indice = i;
+        s->temporizadores_tren[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                                       esp32s3_gpio_paso_tren,
+                                                       &s->temporizadores_tren[i]);
+    }
     object_property_set_int(obj, "strap_mode", ESP32S3_STRAP_MODE_FLASH_BOOT,
                             &error_fatal);
     memory_region_init_io(&s->iomem, obj, &esp32s3_gpio_ops, s,
@@ -314,6 +367,10 @@ static void esp32s3_gpio_finalize(Object *obj)
 
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_free(s->trenes[i].timer);
+    }
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        timer_del(s->temporizadores_tren[i].timer);
+        timer_free(s->temporizadores_tren[i].timer);
     }
     timer_free(s->cuanto_armado);
 }

@@ -285,6 +285,7 @@ static void esp32_taller_recibir(void *opaque, uint8_t tipo,
                                 const uint8_t *datos, size_t largo)
 {
     if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
+        esp32_gpio_cancelar_tren(datos[0]);
         esp32_gpio_fijar_entrada(datos[0], datos[1]);
     } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
         static const uint8_t gpio_adc1[] = {36, 37, 38, 39, 32, 33, 34, 35};
@@ -302,6 +303,8 @@ static void esp32_taller_recibir(void *opaque, uint8_t tipo,
         taller_i2c_registros(datos[0], datos[1], datos[2], datos + 3, largo - 3);
     } else if (tipo == TALLER_TRAMA_ENTRADA_ARMADA) {
         esp32_gpio_armar_entrada(datos, largo);
+    } else if (tipo == TALLER_TRAMA_ENTRADA_TREN) {
+        esp32_gpio_tren_entrada(datos, largo);
     }
 }
 

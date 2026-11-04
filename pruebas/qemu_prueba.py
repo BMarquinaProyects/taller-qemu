@@ -547,6 +547,99 @@ def s3_pull(qemu: str, firmware: str) -> int:
     return pull_soc(qemu, firmware, "s3")
 
 
+TIPO_ENTRADA_TREN = 21
+
+
+def trama_entrada_tren(pin: int, pasos: list) -> bytes:
+    """ENTRADA_TREN (v8): u8 pin, u16 n, n × (u32 espera_ns, u8 nivel 0/1/2)."""
+    if len(pasos) > 64 or any(nivel not in (0, 1, 2) for _, nivel in pasos):
+        raise ValueError("ENTRADA_TREN admite hasta 64 pasos de nivel 0, 1 o 2")
+    carga = struct.pack("<BH", pin, len(pasos)) + b"".join(
+        struct.pack("<IB", espera, nivel) for espera, nivel in pasos)
+    return CABECERA.pack(TIPO_ENTRADA_TREN, 8, len(carga), 0) + carga
+
+
+LINEAS_TREN = ["TREN-LISTO", "TREN-INICIAL=1", "FLANCOS=4", "NIVEL=0",
+               "TREN-CANCELA-LISTO", "CANCELADO=1", "TALLER-OK tren"]
+
+
+def comprobar_tren(texto: str) -> list[str]:
+    """Cada línea una sola vez y en orden; sin TALLER-FALLO."""
+    errores = []
+    posiciones = []
+    for linea in LINEAS_TREN:
+        coincidencias = list(re.finditer(r"^" + re.escape(linea) + r"\r?\n", texto, re.MULTILINE))
+        if len(coincidencias) != 1:
+            errores.append(f"sin línea única {linea}")
+        else:
+            posiciones.append(coincidencias[0].start())
+    if posiciones != sorted(posiciones) or "TALLER-FALLO" in texto:
+        errores.append("UART fuera de orden o fallo del firmware")
+    return errores
+
+
+def tren(qemu: str, firmware: str) -> int:
+    """GPIO16 con INPUT_PULLUP: un tren 0/suelto/0/suelto/0 a 300 µs da 4 flancos
+    tras el primero y acaba en 0; luego un ENTRADA cancela el paso pendiente."""
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, True)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    buf = [""]
+
+    def esperar_linea(linea, plazo_s):
+        patron = r"^" + re.escape(linea) + r"\r?\n"
+        fin = time.monotonic() + plazo_s
+        s_uart.settimeout(0.2)
+        while time.monotonic() < fin:
+            if re.search(patron, buf[0], re.MULTILINE):
+                return True
+            try:
+                trozo = s_uart.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not trozo:
+                break
+            buf[0] += trozo.decode(errors="replace")
+        return bool(re.search(patron, buf[0], re.MULTILINE))
+
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        if esperar_linea("TREN-LISTO", 60):
+            s_puente.sendall(trama_entrada_tren(16, [(0, 0), (300_000, 2), (300_000, 0),
+                                                     (300_000, 2), (300_000, 0)]))
+            if esperar_linea("TREN-CANCELA-LISTO", 30):
+                # El paso de 20 ms a 0 nunca debe llegar: ENTRADA lo cancela.
+                s_puente.sendall(trama_entrada_tren(16, [(0, 2), (20_000_000, 0)]) +
+                                 trama_entrada(16, 1))
+                esperar_linea("TALLER-OK tren", 30)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_tren(buf[0])
+    if not tramas or not es_hola(tramas[0], 8):
+        errores.append("sin HOLA v8")
+    for error in errores:
+        print("FALLO", error)
+    print(f"FALLO tren\n{buf[0][-1500:]}" if errores else
+          "OK tren: ENTRADA_TREN en tiempo virtual, suelto con PU y cancelación por ENTRADA")
+    return 1 if errores else 0
+
+
 def trama_analogico(gpio: int, valor: int) -> bytes:
     return CABECERA.pack(TIPO_ANALOGICO, 3, 3, 0) + struct.pack("<BH", gpio, valor)
 
@@ -1697,7 +1790,7 @@ def s3_analogico(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
-    if modo in ("pull", "c3_pull", "s3_pull"):
+    if modo in ("pull", "c3_pull", "s3_pull", "tren"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi", "s3_fpu", "s3_flash_qio"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))

@@ -14,7 +14,7 @@ static void esperar(char comando) {
   bien = false;
 }
 
-// Esperar un cambio real evita depender del orden de atenci?n de dos sockets.
+// Esperar un cambio real evita depender del orden de atención de dos sockets.
 static bool esperar_nivel(unsigned pin, int nivel) {
   uint32_t inicio = millis();
   while (digitalRead(pin) != nivel && millis() - inicio < 10000) {
@@ -45,15 +45,15 @@ void setup() {
   Serial.begin(115200); // USB CDC desactivado en C3/S3.
   pinMode(15, INPUT);
   Serial.printf("PULL-LISTO\n");
-  esperar('C'); // El verificador est? imponiendo cero.
+  esperar('C'); // El verificador está imponiendo cero.
   bool semilla = true;
   semilla &= esperar_nivel(15, LOW);
   Serial.printf("PULL-SEMILLA=%d\n", semilla ? 0 : 1);
-  esperar('S'); // ENTRADA 2 se env?a en orden inverso; el primer pad es el ?ltimo.
+  esperar('S'); // ENTRADA 2 se envía en orden inverso; el primer pad es el último.
   probar(15, "");
   pinMode(15, INPUT_PULLUP);
   Serial.printf("PULL-IMPUESTO-LISTO\n");
-  esperar('I'); // El verificador est? imponiendo cero, con el pull-up activo.
+  esperar('I'); // El verificador está imponiendo cero, con el pull-up activo.
   esperar_nivel(15, LOW);
   int impuesto = digitalRead(15);
   Serial.printf("IMPUESTO=%d\n", impuesto);

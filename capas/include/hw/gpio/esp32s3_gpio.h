@@ -4,6 +4,7 @@
 #include "hw/registerfields.h"
 #include "qemu/timer.h"
 #include "hw/misc/taller_armado.h"
+#include "hw/misc/taller_tren.h"
 
 #define TYPE_ESP32S3_GPIO "esp32s3.gpio"
 #define ESP32S3_GPIO(obj) OBJECT_CHECK(ESP32S3GPIOState, (obj), TYPE_ESP32S3_GPIO)
@@ -58,9 +59,15 @@ typedef struct ESP32S3GPIOState {
     TallerArmado armado;
     ESP32S3GpioTren trenes[TALLER_ARMADO_RANURAS];
     QEMUTimer *cuanto_armado;
+    TallerTren tren; /* ENTRADA_TREN (v8) */
+    ESP32S3GpioTren temporizadores_tren[TALLER_TREN_RANURAS];
 } ESP32S3GPIOState;
 
 /* 0/1 imponen el pin; 2 lo suelta y resuelve sus pulls internos. */
 void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, uint8_t nivel);
 void esp32s3_gpio_armar_entrada(ESP32S3GPIOState *s, const uint8_t *datos, size_t largo);
+/* Carga ENTRADA_TREN sin cabecera; ignora cargas inválidas. */
+void esp32s3_gpio_tren_entrada(ESP32S3GPIOState *s, const uint8_t *datos, size_t largo);
+/* Un ENTRADA del puente cancela el tren pendiente del pin. */
+void esp32s3_gpio_cancelar_tren(ESP32S3GPIOState *s, uint8_t pin);
 int esp32s3_gpio_pin_de_senal(void *opaque, int senal);

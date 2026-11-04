@@ -2,7 +2,7 @@
  * Puente de Taller: envía a un programa externo, por un chardev, lo que el firmware
  * hace con los pines (GPIO), SPI, PWM, I2C y RMT, con marca de tiempo virtual.
  *
- * Protocolo v8 (little-endian; v7 + PULL y entradas sueltas). Cabecera de 12 bytes:
+ * Protocolo v8 (little-endian; v7 + PULL, entradas sueltas y ENTRADA_TREN). Cabecera de 12 bytes:
  *   u8 tipo, u8 version (=8), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
  * Tipos (QEMU -> programa externo):
  *   1 HOLA  carga: u32 version_protocolo (=8)
@@ -53,6 +53,16 @@
  *              antigüedad >= minimo_ns en el nivel opuesto. Armado persistente.
  *              Mientras suena no se redispara; rearmar/desarmar afecta al futuro,
  *              nunca a los pasos en curso. Una carga inválida se ignora entera.
+ *  21 ENTRADA_TREN (desde v8): u8 pin, u16 n, n*(u32 espera_ns, u8 nivel).
+ *              Sin relleno: 3+5*n bytes; n<=64; nivel 0, 1 o 2 (suelto).
+ *              Tren inmediato: la primera espera cuenta desde la recepción;
+ *              las demás, desde el paso anterior. Cada paso va por la ruta
+ *              de ENTRADA. Un tren nuevo en el pin sustituye al pendiente;
+ *              n=0 solo lo cancela; ENTRADA en el pin también lo cancela;
+ *              un paso de ENTRADA_ARMADA no. Ocho ranuras: un noveno pin
+ *              sustituye al tren más antiguo. El reset cancela los trenes.
+ *              Carga inválida (largo, n, nivel o pin fuera del chip): se
+ *              ignora entera. Lógica pura en hw/misc/taller_tren.h.
  *
  * Se activa solo si existe un chardev con id "taller-puente".
  * Cada máquina recibe sus cargas mediante TallerPuenteReceptor. C3 y S3
@@ -86,6 +96,7 @@ enum {
     TALLER_TRAMA_I2C_DISPOSITIVO = 18,
     TALLER_TRAMA_I2C_REGISTROS = 19,
     TALLER_TRAMA_ENTRADA_ARMADA = 20,
+    TALLER_TRAMA_ENTRADA_TREN = 21,
 };
 
 /* Receptor propio de la máquina; recibe una carga completa, sin cabecera. */

@@ -164,8 +164,9 @@ class PruebaPullModelo(unittest.TestCase):
         modelo = fuente[fuente.index(inicio):fuente.index(f"static Property {chip}_gpio_properties")]
         plantilla = (RAIZ / "pruebas/pull_gpio_modelo.c").read_text(encoding="utf-8")
         armado = (RAIZ / "capas/include/hw/misc/taller_armado.h").read_text(encoding="utf-8")
+        tren = (RAIZ / "capas/include/hw/misc/taller_tren.h").read_text(encoding="utf-8")
         pull = (RAIZ / "capas/include/hw/gpio/taller_pull.h").read_text(encoding="utf-8")
-        codigo = plantilla.replace("/* CABECERA_REAL */", (armado + pull + cab).replace("#pragma once", "")).replace(
+        codigo = plantilla.replace("/* CABECERA_REAL */", (armado + tren + pull + cab).replace("#pragma once", "")).replace(
             "/* MODELO_REAL */", modelo)
         self.compilar(f"#define CHIP_{chip.upper()} 1\n" + codigo)
 

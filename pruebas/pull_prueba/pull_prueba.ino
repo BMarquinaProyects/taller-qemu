@@ -14,7 +14,7 @@ static void esperar(char comando) {
   bien = false;
 }
 
-// Esperar un cambio real evita depender del orden de atenci?n de dos sockets.
+// Esperar un cambio real evita depender del orden de atención de dos sockets.
 static bool esperar_nivel(unsigned pin, int nivel) {
   uint32_t inicio = millis();
   while (digitalRead(pin) != nivel && millis() - inicio < 10000) {
@@ -47,22 +47,22 @@ void setup() {
   pinMode(16, INPUT);
   pinMode(34, INPUT);
   Serial.printf("PULL-LISTO\n");
-  esperar('C'); // El verificador est? imponiendo cero.
+  esperar('C'); // El verificador está imponiendo cero.
   bool semilla = true;
   semilla &= esperar_nivel(15, LOW);
   semilla &= esperar_nivel(16, LOW);
   semilla &= esperar_nivel(34, LOW);
   Serial.printf("PULL-SEMILLA=%d\n", semilla ? 0 : 1);
-  esperar('S'); // ENTRADA 2 se env?a en orden inverso; el primer pad es el ?ltimo.
+  esperar('S'); // ENTRADA 2 se envía en orden inverso; el primer pad es el último.
   probar(15, "");
   probar(16, "GPIO16-");
   pinMode(34, INPUT_PULLUP); // El ESP32 carece de resistencias en GPIO34..39.
   int gpio34 = digitalRead(34);
   Serial.printf("GPIO34-PULLUP=%d\n", gpio34);
-  bien &= gpio34 == 0; // El verificador sembr? cero antes de soltarlo.
+  bien &= gpio34 == 0; // El verificador sembró cero antes de soltarlo.
   pinMode(15, INPUT_PULLUP);
   Serial.printf("PULL-IMPUESTO-LISTO\n");
-  esperar('I'); // El verificador est? imponiendo cero, con el pull-up activo.
+  esperar('I'); // El verificador está imponiendo cero, con el pull-up activo.
   esperar_nivel(15, LOW);
   int impuesto = digitalRead(15);
   Serial.printf("IMPUESTO=%d\n", impuesto);

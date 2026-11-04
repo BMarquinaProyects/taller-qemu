@@ -1,6 +1,7 @@
 /* Adaptador mínimo para ejecutar el receptor real sin construir QEMU. */
 #include <assert.h>
 #include "hw/misc/taller_armado.h"
+#include "hw/misc/taller_tren.h"
 
 #define CABECERA 12
 #define ESP32_SENS_CANALES_ADC1 8
@@ -9,8 +10,9 @@ typedef void (*TallerPuenteReceptor)(void *, uint8_t, const uint8_t *, size_t);
 enum {
     TALLER_TRAMA_ENTRADA = 16, TALLER_TRAMA_ANALOGICO = 17,
     TALLER_TRAMA_I2C_DISPOSITIVO = 18, TALLER_TRAMA_I2C_REGISTROS = 19,
-    TALLER_TRAMA_ENTRADA_ARMADA = 20,
+    TALLER_TRAMA_ENTRADA_ARMADA = 20, TALLER_TRAMA_ENTRADA_TREN = 21,
 };
+static unsigned trenes, cancelaciones;
 static TallerArmado armado;
 static unsigned entradas, analogicos, altas, registros;
 static uint8_t bus_esperado = 1;
@@ -44,6 +46,8 @@ static void esp32_gpio_armar_entrada(const uint8_t *p, size_t n)
 {
     taller_armado_recibir(&armado, p, n);
 }
+static void esp32_gpio_cancelar_tren(uint8_t pin) { (void)pin; cancelaciones++; }
+static void esp32_gpio_tren_entrada(const uint8_t *p, size_t n) { (void)p; (void)n; trenes++; }
 #include "clasico_receptor.h"
 typedef struct ESP32C3GPIOState { uint32_t in_externo; } ESP32C3GPIOState;
 typedef struct ESP32C3SarAdcState { uint16_t valores[5]; } ESP32C3SarAdcState;
@@ -72,6 +76,19 @@ static void esp32c3_gpio_armar_entrada(ESP32C3GPIOState *s, const uint8_t *p, si
     assert(s != NULL);
     taller_armado_recibir(&armado, p, n);
 }
+static void esp32c3_gpio_cancelar_tren(ESP32C3GPIOState *s, uint8_t pin)
+{
+    assert(s != NULL);
+    (void)pin;
+    cancelaciones++;
+}
+static void esp32c3_gpio_tren_entrada(ESP32C3GPIOState *s, const uint8_t *p, size_t n)
+{
+    assert(s != NULL);
+    (void)p;
+    (void)n;
+    trenes++;
+}
 #include "c3_receptor.h"
 /* Adaptadores de los destinos S3; los modelos se prueban aparte sin QOM. */
 typedef struct ESP32S3GPIOState { unsigned llamadas; uint8_t pin; uint8_t nivel; } ESP32S3GPIOState;
@@ -96,6 +113,19 @@ static void esp32s3_gpio_armar_entrada(ESP32S3GPIOState *s, const uint8_t *p, si
 {
     assert(s != NULL);
     taller_armado_recibir(&armado, p, n);
+}
+static void esp32s3_gpio_cancelar_tren(ESP32S3GPIOState *s, uint8_t pin)
+{
+    assert(s != NULL);
+    (void)pin;
+    cancelaciones++;
+}
+static void esp32s3_gpio_tren_entrada(ESP32S3GPIOState *s, const uint8_t *p, size_t n)
+{
+    assert(s != NULL);
+    (void)p;
+    (void)n;
+    trenes++;
 }
 #include "s3_receptor.h"
 #include "puente_receptor.h"

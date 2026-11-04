@@ -32,12 +32,12 @@ static int64_t ahora;
 static Error *error_fatal;
 static unsigned avisos;
 static uint64_t ultimo_arriba, ultimo_abajo;
-static QEMUTimer timers[9];
+static QEMUTimer timers[9 + 8]; /* + las 8 ranuras de ENTRADA_TREN */
 static unsigned usados;
 static int64_t qemu_clock_get_ns(int reloj) { return ahora; }
 static QEMUTimer *timer_new_ns(int reloj, void (*cb)(void *), void *op)
 {
-    assert(usados < 9);
+    assert(usados < sizeof(timers) / sizeof(timers[0]));
     return &timers[usados++];
 }
 static void timer_mod_ns(QEMUTimer *t, int64_t plazo)

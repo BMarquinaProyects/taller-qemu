@@ -628,6 +628,7 @@ static void esp32s3_taller_recibir(void *opaque, uint8_t tipo,
     Esp32s3SocState *ss = opaque;
 
     if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
+        esp32s3_gpio_cancelar_tren(&ss->gpio, datos[0]);
         esp32s3_gpio_fijar_entrada(&ss->gpio, datos[0], datos[1]);
     } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
         esp32s3_saradc_fijar_valor(&ss->saradc, datos[0], lduw_le_p(datos + 1));
@@ -637,6 +638,8 @@ static void esp32s3_taller_recibir(void *opaque, uint8_t tipo,
         taller_i2c_registros(0, datos[1], datos[2], datos + 3, largo - 3);
     } else if (tipo == TALLER_TRAMA_ENTRADA_ARMADA) {
         esp32s3_gpio_armar_entrada(&ss->gpio, datos, largo);
+    } else if (tipo == TALLER_TRAMA_ENTRADA_TREN) {
+        esp32s3_gpio_tren_entrada(&ss->gpio, datos, largo);
     }
 }
 

@@ -1,5 +1,8 @@
 # M-239: contactos pasivos y puente v8
 
+> Nota: en la bitácora de Taller esta mejora es **M-245** (M-239 acabó siendo el
+> modelo del BME280 de 6 pines). El nombre de la rama y de este archivo se conserva.
+
 Plan de implementación, según la especificación de M-239:
 
 - [x] Modelar IO_MUX en los tres GPIO y RTC_IO en el clásico. Conservar registros
@@ -44,3 +47,12 @@ Decisiones de alcance: selección RTC/digital y descarga física quedan en las
 simplificaciones pedidas; IRQ GPIO, otros niveles inválidos y reconexión del
 puente mantienen el comportamiento previo. No se modifican subsistemas ajenos.
 La compilación y ejecución de QEMU siguen pendientes del revisor.
+
+## Revisión (2026-11-04)
+
+- Compilado en WSL (Ubuntu 24.04) con las capas: `todas.sh` pasa entero, incluidos
+  `pull`, `c3_pull` y `s3_pull`.
+- Las 9 unitarias que se omitían sin GCC (modelos reales de los tres GPIO y los
+  receptores) pasan con GCC en Linux.
+- Añadido **ENTRADA_TREN** (tipo 21, también v8), ver README: el núcleo ya la
+  enviaba al ver HOLA v8; sin ella, el estado final de un contacto no llegaba.

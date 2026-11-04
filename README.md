@@ -513,6 +513,7 @@ little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=8, u16 longitud
 | 18 I2C_DISPOSITIVO (hacia QEMU) | `u8 bus, u8 direccion, u8 activo`: alta o baja de una dirección |
 | 19 I2C_REGISTROS (hacia QEMU) | `u8 bus, u8 direccion, u8 registro_inicial, bytes…`: hasta 240 bytes para el espejo |
 | 20 ENTRADA_ARMADA (hacia QEMU) | `u8 pin_disparo, u8 flanco, u32 minimo_ns, u8 pin_salida, u16 n`, seguidos de `n × (u32 espera_ns, u8 nivel)`; `9 + 5·n` bytes, sin relleno |
+| 21 ENTRADA_TREN (hacia QEMU) | `u8 pin, u16 n`, seguidos de `n × (u32 espera_ns, u8 nivel)`; `3 + 5·n` bytes, sin relleno, `n ≤ 64`, nivel 0/1/2; tren inmediato desde la recepción (v8) |
 
 Sin ese chardev, QEMU se comporta como el de Espressif.
 
@@ -559,7 +560,8 @@ $config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
 $casos = @(
   @('pull_prueba', 'esp32:esp32:esp32:FlashMode=dio'),
   @('c3_pull_prueba', 'esp32:esp32:esp32c3:FlashMode=dio,FlashFreq=40,CDCOnBoot=default'),
-  @('s3_pull_prueba', 'esp32:esp32:esp32s3:FlashMode=dio,FlashSize=4M,PSRAM=disabled,CDCOnBoot=default')
+  @('s3_pull_prueba', 'esp32:esp32:esp32s3:FlashMode=dio,FlashSize=4M,PSRAM=disabled,CDCOnBoot=default'),
+  @('tren_prueba', 'esp32:esp32:esp32:FlashMode=dio,FlashFreq=40')
 )
 foreach ($caso in $casos) {
   $nombre, $fqbn = $caso
@@ -578,8 +580,34 @@ python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_pull pruebas/c3_pull
 python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_pull pruebas/s3_pull_prueba.flash.bin
 ```
 
-Pendiente del revisor: compilar/enlazar QEMU, ejecutar `todas.sh` en Linux
-y validar el binario Windows. Las pruebas aisladas no certifican esa integración.
+### ENTRADA_TREN (tipo 21, v8)
+
+Secuencia **inmediata** de niveles en tiempo virtual, sin esperar un flanco del
+firmware: el rebote de un contacto (abre y cierra varias veces en 1–5 ms) o el
+hueco de un conmutador «break-before-make». `ENTRADA_ARMADA` no sirve para eso,
+porque solo arranca con un flanco de salida.
+
+- Carga `u8 pin, u16 n, n × (u32 espera_ns, u8 nivel)`, LE y sin relleno: `3 + 5·n`
+  bytes, `n ≤ 64`, nivel 0, 1 o 2 (suelto, como en ENTRADA). `n = 0` solo cancela
+  el tren pendiente del pin.
+- La primera espera cuenta desde que llega la trama; las demás, desde el paso
+  anterior (plazos acumulativos: una atención tardía no desplaza los siguientes).
+  Cada paso aplica su nivel por la misma ruta que ENTRADA; una espera 0 se aplica
+  al momento.
+- Un tren nuevo en el mismo pin sustituye al pendiente. `ENTRADA` en ese pin
+  también lo cancela; un paso de `ENTRADA_ARMADA` no (son independientes).
+- Ocho ranuras por chip; un noveno pin sustituye al tren más antiguo. El reset
+  del chip cancela los trenes pendientes.
+- Una carga inválida (largo que no cuadra, `n > 64`, nivel > 2 o pin fuera del
+  chip: clásico 0..39, C3 0..21, S3 0..21 y 26..48) se ignora entera y no cancela nada.
+
+La lógica pura está en `capas/include/hw/misc/taller_tren.h` y se prueba aislada
+con `pruebas/tren_logica.c` (`tren_unitarias.py`). La prueba integrada `tren`
+(en `todas.sh`) pone GPIO16 con `INPUT_PULLUP`, manda `0 (0 µs), 2 (300 µs),
+0 (300 µs), 2 (300 µs), 0 (300 µs)` y el sketch, que cuenta flancos leyendo en
+un bucle cerrado durante 50 ms (el GPIO no genera IRQ), exige `FLANCOS=4` y
+`NIVEL=0`. Después manda `2 (0 µs), 0 (20 ms)` seguido de `ENTRADA(16, 1)` y exige
+`CANCELADO=1`: el paso de 20 ms no llega.
 
 La versión 7 añade TIEMPO: un latido cada 10 ms virtuales con la hora del ESP32, para que el
 receptor la sepa aunque el firmware no toque ningún periférico (el arranque o un programa que solo
