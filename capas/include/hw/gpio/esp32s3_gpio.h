@@ -42,10 +42,16 @@ typedef struct ESP32S3GpioTren {
 typedef struct ESP32S3GPIOState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    MemoryRegion iomux;
+    uint32_t registros_iomux[0x2000 / 4];
+
     uint32_t strap_mode;
     uint64_t out;
     uint64_t enable;
     uint64_t in_externo;
+    uint64_t pull_arriba;
+    uint64_t pull_abajo;
+    uint64_t sueltos;
     uint64_t drenador_abierto;
     uint32_t registro_pin[ESP32S3_GPIO_PINES];
     uint32_t seleccion_salida[ESP32S3_GPIO_PINES];
@@ -54,6 +60,7 @@ typedef struct ESP32S3GPIOState {
     QEMUTimer *cuanto_armado;
 } ESP32S3GPIOState;
 
-void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, bool nivel);
+/* 0/1 imponen el pin; 2 lo suelta y resuelve sus pulls internos. */
+void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, uint8_t nivel);
 void esp32s3_gpio_armar_entrada(ESP32S3GPIOState *s, const uint8_t *datos, size_t largo);
 int esp32s3_gpio_pin_de_senal(void *opaque, int senal);

@@ -1,5 +1,6 @@
 *.sh text eol=lf
 *.c text eol=lf
 *.h text eol=lf
+*.py text eol=lf
 meson.build text eol=lf
 *.bin binary

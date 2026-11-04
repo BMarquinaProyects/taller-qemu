@@ -49,12 +49,20 @@ typedef struct Esp32GpioState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+    MemoryRegion iomux;
+    MemoryRegion rtcio;
+    uint32_t registros_iomux[0x2000 / 4];
+    uint32_t registros_rtcio[0x400 / 4];
+
     qemu_irq irq;
     uint32_t strap_mode;
     /* Taller: bit n = GPIO n (0-39) */
     uint64_t out;        /* nivel que el firmware escribe */
     uint64_t enable;     /* 1 = el pin es salida */
     uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
+    uint64_t pull_arriba;
+    uint64_t pull_abajo;
+    uint64_t sueltos;
     uint32_t seleccion_salida[ESP32_GPIO_CANTIDAD_PINES];
     uint32_t registro_pin[ESP32_GPIO_CANTIDAD_PINES]; /* GPIO_PINn_REG */
     uint64_t drenador_abierto;                         /* bit n = PAD_DRIVER del pin n */
@@ -63,8 +71,8 @@ typedef struct Esp32GpioState {
     QEMUTimer *cuanto_armado;
 } Esp32GpioState;
 
-/* Taller: nivel que llega desde fuera a un pin de entrada (botones, sensores…). */
-void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel);
+/* Taller: 0/1 imponen el pin; 2 lo suelta y resuelve sus pulls internos. */
+void esp32_gpio_fijar_entrada(uint8_t pin, uint8_t nivel);
 /* Carga ENTRADA_ARMADA ya separada de su cabecera; ignora cargas inválidas. */
 void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo);
 /* Primer pin conectado a la señal de la matriz de salida, o -1. */

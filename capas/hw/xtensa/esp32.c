@@ -285,7 +285,7 @@ static void esp32_taller_recibir(void *opaque, uint8_t tipo,
                                 const uint8_t *datos, size_t largo)
 {
     if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
-        esp32_gpio_fijar_entrada(datos[0], datos[1] != 0);
+        esp32_gpio_fijar_entrada(datos[0], datos[1]);
     } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
         static const uint8_t gpio_adc1[] = {36, 37, 38, 39, 32, 33, 34, 35};
 
@@ -463,6 +463,19 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
 
     qdev_realize(DEVICE(&s->gpio), &s->periph_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->gpio, DR_REG_GPIO_BASE);
+    /* IO_MUX y RTC_IO comparten estado/reset del GPIO y ambos alias APB. */
+    for (unsigned i = 1; i <= 2; i++) {
+        hwaddr base = i == 1 ? DR_REG_IO_MUX_BASE : DR_REG_RTCIO_BASE;
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->gpio), i);
+        MemoryRegion *alias = g_new(MemoryRegion, 1);
+
+        memory_region_add_subregion_overlap(sys_mem, base, mr, 0);
+        memory_region_init_alias(alias, OBJECT(&s->gpio),
+                                 i == 1 ? "iomux-apb" : "rtcio-apb",
+                                 mr, 0, memory_region_size(mr));
+        memory_region_add_subregion_overlap(sys_mem,
+            base - DR_REG_DPORT_APB_BASE + APB_REG_BASE, alias, 0);
+    }
 
     for (int i = 0; i < ESP32_UART_COUNT; ++i) {
         const hwaddr uart_base[] = {DR_REG_UART_BASE, DR_REG_UART1_BASE, DR_REG_UART2_BASE};
@@ -591,8 +604,6 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base, &s->rgb.vram, 0);
 
     esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);

@@ -4,6 +4,9 @@ Pruebas de humo de taller-qemu: ejecuta un firmware y comprueba su salida (y las
   python pruebas/qemu_prueba.py <qemu-system-xtensa> humo   <firmware.bin> <marca>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> puente <puente_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> entrada <entrada_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> pull <pull_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-riscv32> c3_pull <c3_pull_prueba.flash.bin>
+  python pruebas/qemu_prueba.py <qemu-system-xtensa> s3_pull <s3_pull_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> pwm <pwm_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> analogico <analogico_prueba.flash.bin>
   python pruebas/qemu_prueba.py <qemu-system-xtensa> i2c <i2c_prueba.flash.bin>
@@ -44,8 +47,9 @@ EFUSE_ECO3[13] = 0x80
 EFUSE_ECO3[22] = 0x10
 CABECERA = struct.Struct("<BBHQ")  # tipo, version, longitud_carga, t_ns
 # Versión del protocolo del puente que compila este repo (TALLER_PUENTE_VERSION).
-VERSION_PUENTE = 7
+VERSION_PUENTE = 8
 TIPO_TIEMPO = 8
+TIPO_PULL = 9
 LATIDO_NS = 10_000_000
 
 
@@ -145,7 +149,7 @@ def comprobar_gpio_soc(tramas: list, texto: str, chip: str, pin: int,
     """Exige tres pulsos habilitados y lectura externa 1→0 en C3/S3."""
     errores = []
     if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
-        errores.append("sin HOLA v7")
+        errores.append(f"sin HOLA v{VERSION_PUENTE}")
     marca = "c3" if chip == "c3" else "s3_gpio"
     lineas = (f"{chip.upper()}-ANTES=1", f"{chip.upper()}-DESPUES=0", f"TALLER-OK {marca}")
     posiciones = []
@@ -223,7 +227,7 @@ def gpio_soc(qemu: str, firmware: str, chip: str, salida: int, entrada: int) -> 
     for error in errores:
         print("FALLO", error)
     print(f"FALLO {chip}_gpio\n" + texto[-1500:] if errores else
-          f"OK {chip}_gpio: GPIO{salida} tres pulsos; GPIO{entrada} INPUT_PULLUP 1→0; HOLA v7")
+          f"OK {chip}_gpio: GPIO{salida} tres pulsos; GPIO{entrada} INPUT_PULLUP 1→0; HOLA v8")
     return 1 if errores else 0
 
 
@@ -395,7 +399,152 @@ TIPO_ANALOGICO = 17
 
 
 def trama_entrada(pin: int, nivel: int) -> bytes:
-    return CABECERA.pack(TIPO_ENTRADA, 3, 2, 0) + bytes([pin, nivel])
+    return CABECERA.pack(TIPO_ENTRADA, 8 if nivel == 2 else 3, 2, 0) + bytes([pin, nivel])
+
+
+def comprobar_pull(tramas: list, texto: str, chip: str = "esp32") -> list[str]:
+    """Comprueba lecturas UART y la secuencia de pulls efectivos por pad."""
+    errores = []
+    pines = [15, 16] if chip == "esp32" else [9 if chip == "c3" else 15]
+    mascara = (1 << 40) - 1 if chip == "esp32" else (
+        (1 << 22) - 1 if chip == "c3" else MASCARA_S3)
+    observados = sum(1 << p for p in pines)
+    marca = "pull" if chip == "esp32" else f"{chip}_pull"
+    lineas = ["PULL-LISTO", "PULL-SEMILLA=0"]
+    esperados = [(0, 0)]
+    for i, pin in enumerate(pines):
+        prefijo = "" if i == 0 else f"GPIO{pin}-"
+        lineas += [f"{prefijo}PULL-ARRIBA=1", f"{prefijo}PULL-ABAJO=0", f"{prefijo}SIN-PULL=0"]
+        esperados += [(1 << pin, 0), (0, 1 << pin), (0, 0)]
+    if chip == "esp32":
+        lineas += ["GPIO34-PULLUP=0"]
+    lineas += ["PULL-IMPUESTO-LISTO", "IMPUESTO=0", f"TALLER-OK {marca}"]
+    esperados += [(1 << pines[0], 0)]
+    posiciones = []
+    for linea in lineas:
+        coincidencias = list(re.finditer(r"^" + re.escape(linea) + r"\r?\n", texto, re.MULTILINE))
+        if len(coincidencias) != 1:
+            errores.append(f"sin línea única {linea}")
+        else:
+            posiciones.append(coincidencias[0].start())
+    if posiciones != sorted(posiciones) or "TALLER-FALLO" in texto:
+        errores.append("UART fuera de orden o fallo del firmware")
+    if not tramas or not es_hola(tramas[0], 8):
+        errores.append("sin HOLA v8")
+    if len(tramas) < 2 or tramas[1][0] != TIPO_PULL:
+        errores.append("PULL debe seguir inmediatamente a HOLA")
+    estados = []
+    anterior = None
+    for indice, (tipo, version, _, carga) in enumerate(tramas):
+        if version != VERSION_PUENTE or tipo not in (1, 2, TIPO_TIEMPO, TIPO_PULL):
+            errores.append("tipo o versión inválidos")
+        if tipo == 1 and indice:
+            errores.append("HOLA repetido")
+        if tipo == TIPO_TIEMPO and carga:
+            errores.append("TIEMPO con carga")
+        if tipo in (2, TIPO_PULL):
+            if len(carga) != 16:
+                errores.append("GPIO/PULL debe tener 16 bytes")
+                continue
+            arriba, abajo = struct.unpack("<QQ", carga)
+            if (arriba | abajo) & ~mascara:
+                errores.append("máscara fuera del chip")
+            if tipo == TIPO_PULL:
+                if chip == "esp32" and (arriba | abajo) & (0x3f << 34):
+                    errores.append("GPIO34..39 no tienen pull")
+                if anterior == (arriba, abajo):
+                    errores.append("PULL repetido sin cambio")
+                anterior = (arriba, abajo)
+                estados.append((arriba & observados, abajo & observados))
+    siguiente = 0
+    for estado in estados:
+        if siguiente < len(esperados) and estado == esperados[siguiente]:
+            siguiente += 1
+    if siguiente != len(esperados):
+        errores.append(f"secuencia PULL incompleta: {estados}")
+    tiempos = [t for _, _, t, _ in tramas]
+    if tiempos != sorted(tiempos):
+        errores.append("t_ns decreciente")
+    return errores
+
+
+def pull_soc(qemu: str, firmware: str, chip: str) -> int:
+    """Libera los pads antes de las lecturas y después impone cero con PU activo."""
+    tmp, proc, p_uart, p_puente = (lanzar(qemu, firmware, True) if chip == "esp32"
+                                  else lanzar_soc(qemu, firmware, chip))
+    pines = [15, 16, 34] if chip == "esp32" else [9 if chip == "c3" else 15]
+    marca = "pull" if chip == "esp32" else f"{chip}_pull"
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    buf = [""]
+
+    def esperar_linea(linea, plazo_s):
+        patron = r"^" + re.escape(linea) + r"\r?\n"
+        fin = time.monotonic() + plazo_s
+        s_uart.settimeout(0.2)
+        while time.monotonic() < fin:
+            if re.search(patron, buf[0], re.MULTILINE):
+                return True
+            try:
+                trozo = s_uart.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not trozo:
+                break
+            buf[0] += trozo.decode(errors="replace")
+        return bool(re.search(patron, buf[0], re.MULTILINE))
+
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        if esperar_linea("PULL-LISTO", 60):
+            # El firmware confirma el cero efectivo en todos los pads.
+            s_puente.sendall(b"".join(trama_entrada(p, 0) for p in pines))
+            s_uart.sendall(b"C")
+            if esperar_linea("PULL-SEMILLA=0", 30):
+                # El primer pad se suelta el último. Su subida con PU confirma
+                # que el receptor ya procesó TODAS las liberaciones anteriores.
+                s_puente.sendall(b"".join(trama_entrada(p, 2) for p in reversed(pines)))
+                s_uart.sendall(b"S")
+                if esperar_linea("PULL-IMPUESTO-LISTO", 30):
+                    s_puente.sendall(trama_entrada(pines[0], 0))
+                    s_uart.sendall(b"I")
+                    esperar_linea(f"TALLER-OK {marca}", 30)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_pull(tramas, buf[0], chip)
+    for error in errores:
+        print("FALLO", error)
+    print(f"FALLO {marca}\n{buf[0][-1500:]}" if errores else
+          f"OK {marca}: pulls internos, entrada suelta e impuesta; HOLA/PULL v8")
+    return 1 if errores else 0
+
+
+def pull(qemu: str, firmware: str) -> int:
+    return pull_soc(qemu, firmware, "esp32")
+
+
+def c3_pull(qemu: str, firmware: str) -> int:
+    return pull_soc(qemu, firmware, "c3")
+
+
+def s3_pull(qemu: str, firmware: str) -> int:
+    return pull_soc(qemu, firmware, "s3")
 
 
 def trama_analogico(gpio: int, valor: int) -> bytes:
@@ -852,7 +1001,7 @@ def comprobar_spi_dma(tramas: list, texto: str) -> list[str]:
     """Exige todo MOSI VSPI, incluidos los ceros de read(4), y su resultado RX."""
     errores = []
     if not tramas or not es_hola(tramas[0], 6):
-        errores.append("sin HOLA v7")
+        errores.append(f"sin HOLA v{VERSION_PUENTE}")
     for linea in ("MISO=ffffffff", "TALLER-OK spi_dma"):
         if len(re.findall(r"^" + re.escape(linea) + r"\r?$", texto, re.MULTILINE)) != 1:
             errores.append(f"sin línea única {linea}")
@@ -995,7 +1144,7 @@ def linea_unica(texto: str, linea: str) -> bool:
 
 def comprobar_pwm_soc(tramas: list, texto: str, chip: str, pin: int,
                        pines: int, mascara: int) -> list[str]:
-    """HOLA v7, tramas PWM válidas y secuencia servo/cambio de reloj/apagado."""
+    """HOLA v8, tramas PWM válidas y secuencia servo/cambio de reloj/apagado."""
     errores = []
     if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
         errores.append(f"sin HOLA v{VERSION_PUENTE}")
@@ -1064,7 +1213,7 @@ def pwm_soc(qemu: str, firmware: str, chip: str, pin: int) -> int:
 
 
 def comprobar_analogico_soc(tramas: list, texto: str, chip: str) -> list[str]:
-    """HOLA v7 y lecturas completas: cero, medio y máximo, en orden."""
+    """HOLA v8 y lecturas completas: cero, medio y máximo, en orden."""
     errores = []
     if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
         errores.append(f"sin HOLA v{VERSION_PUENTE}")
@@ -1158,19 +1307,19 @@ def analogico_soc(qemu: str, firmware: str, chip: str, pin: int) -> int:
 
 
 def comprobar_tramas_periferico_soc(tramas: list, tipo_datos: int, chip: str) -> list[str]:
-    """Valida el sobre v7, los latidos y los GPIO auxiliares de las pruebas C3/S3."""
+    """Valida el sobre vigente, los latidos y los GPIO auxiliares de las pruebas C3/S3."""
     errores = []
     mascara = (1 << 22) - 1 if chip == "c3" else MASCARA_S3
     if not tramas or not es_hola(tramas[0], VERSION_PUENTE):
         errores.append(f"sin HOLA v{VERSION_PUENTE}")
     for indice, (tipo, version, _, carga) in enumerate(tramas):
-        if version != VERSION_PUENTE or tipo not in (1, 2, TIPO_TIEMPO, tipo_datos):
+        if version != VERSION_PUENTE or tipo not in (1, 2, TIPO_TIEMPO, TIPO_PULL, tipo_datos):
             errores.append(f"trama {chip.upper()} inválida: tipo {tipo}, versión {version}")
         if tipo == 1 and (indice != 0 or not es_hola(tramas[indice], VERSION_PUENTE)):
             errores.append("HOLA repetido o inválido")
         if tipo == TIPO_TIEMPO and carga:
             errores.append("TIEMPO debe tener carga vacía")
-        if tipo == 2:
+        if tipo in (2, TIPO_PULL):
             if len(carga) != 16:
                 errores.append("trama GPIO con longitud distinta de 16")
             elif any(valor & ~mascara for valor in struct.unpack("<QQ", carga)):
@@ -1548,6 +1697,8 @@ def s3_analogico(qemu: str, firmware: str) -> int:
 
 if __name__ == "__main__":
     qemu, modo = sys.argv[1], sys.argv[2]
+    if modo in ("pull", "c3_pull", "s3_pull"):
+        sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo in ("s3_gpio", "s3_pwm", "s3_analogico", "s3_i2c", "s3_rmt", "s3_spi", "s3_fpu", "s3_flash_qio"):
         sys.exit(globals()[modo](qemu, sys.argv[3]))
     if modo == "c3_gpio":

@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "hw/misc/taller_armado.h"
+#include "hw/gpio/taller_pull.h"
 
 typedef int SysBusDevice;
 typedef int MemoryRegion;
@@ -36,6 +37,8 @@ static void taller_puente_disparo(uint8_t pin, int64_t t_ns)
     assert(pin == 8 && t_ns == ahora);
     disparos++;
 }
+
+static void taller_puente_pull(uint64_t arriba, uint64_t abajo) {}
 
 /* CABECERA_REAL */
 /* MODELO_REAL */

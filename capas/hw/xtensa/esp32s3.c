@@ -621,14 +621,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(Esp32s3MachineState, ESP32S3_MACHINE)
 
 // -----------------------------------------------
 
-static void esp32s3_soc_add_unimp_device(MemoryRegion *dest, const char* name, hwaddr dport_base_addr, size_t size)
-{
-    create_unimplemented_device(name, dport_base_addr, size);
-    char * name_apb = g_strdup_printf("%s-apb", name);
-    create_unimplemented_device(name_apb, dport_base_addr + APB_REG_BASE, size);
-    g_free(name_apb);
-}
-
 /* Receptor S3: entradas, trenes, ADC1 GPIO1..10 y espejo I2C del bus 0. */
 static void esp32s3_taller_recibir(void *opaque, uint8_t tipo,
                                   const uint8_t *datos, size_t largo)
@@ -636,7 +628,7 @@ static void esp32s3_taller_recibir(void *opaque, uint8_t tipo,
     Esp32s3SocState *ss = opaque;
 
     if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
-        esp32s3_gpio_fijar_entrada(&ss->gpio, datos[0], datos[1] != 0);
+        esp32s3_gpio_fijar_entrada(&ss->gpio, datos[0], datos[1]);
     } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
         esp32s3_saradc_fijar_valor(&ss->saradc, datos[0], lduw_le_p(datos + 1));
     } else if (tipo == TALLER_TRAMA_I2C_DISPOSITIVO && largo >= 3 && datos[0] == 0) {
@@ -826,6 +818,8 @@ static void esp32s3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ss->gpio), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->gpio), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_IO_MUX_BASE,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->gpio), 1), 0);
     }
 
     /* LEDC LS compartido, señales 73..80 según gpio_sig_map.h del S3. */
@@ -975,9 +969,6 @@ static void esp32s3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, esp32s3_memmap[ESP32S3_MEMREGION_FRAMEBUF].base, &ss->rgb.vram, 0);
     }
 
-    esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.iomux", DR_REG_IO_MUX_BASE, 0x2000);
-
-    
     esp32s3_machine_init_sd(ss);
 
     /* Need MMU initialized prior to ELF loading,

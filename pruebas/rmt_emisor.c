@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TALLER_PUENTE_VERSION 6
+#define TALLER_PUENTE_VERSION 8
 #define TALLER_TRAMA_RMT 7
 #define BUSES_SPI 4
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -60,7 +60,7 @@ int main(void)
         const uint8_t *p = salida + off;
         unsigned largo = p[2] | (p[3] << 8);
         uint8_t esperado[8];
-        assert(p[0] == 7 && p[1] == 6 && largo <= 65535 && (largo - 6) % 4 == 0);
+        assert(p[0] == 7 && p[1] == 8 && largo <= 65535 && (largo - 6) % 4 == 0);
         stq_le_p(esperado, 0x123456789);
         assert(memcmp(p + 4, esperado, 8) == 0);
         assert(p[12] == 7 && p[13] == 255);
@@ -74,5 +74,5 @@ int main(void)
         tramas++;
     }
     assert(tramas == 2 && indice == 20000);
-    puts("OK emisor RMT: v7, LE, tiempo inicial y troceado de 20000 símbolos");
+    puts("OK emisor RMT: v8, LE, tiempo inicial y troceado de 20000 símbolos");
 }

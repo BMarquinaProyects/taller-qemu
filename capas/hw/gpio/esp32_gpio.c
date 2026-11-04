@@ -18,6 +18,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32_gpio.h"
+#include "hw/gpio/taller_pull.h"
 #include "hw/misc/esp32_ledc.h"
 #include "hw/misc/taller_puente.h"
 
@@ -40,15 +41,41 @@ int esp32_gpio_pin_de_senal(int senal)
     return -1;
 }
 
-void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel)
+void esp32_gpio_fijar_entrada(uint8_t pin, uint8_t nivel)
 {
-    if (!gpio_del_chip || pin > 39) {
+    Esp32GpioState *s = gpio_del_chip;
+
+    if (!s || pin > 39) {
         return;
     }
-    if (nivel) {
-        gpio_del_chip->in_externo |= 1ull << pin;
+    uint64_t bit = 1ull << pin;
+    if (nivel == 2) {
+        s->sueltos |= bit;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             s->pull_arriba, s->pull_abajo);
     } else {
-        gpio_del_chip->in_externo &= ~(1ull << pin);
+        s->sueltos &= ~bit;
+        if (nivel) {
+            s->in_externo |= bit;
+        } else {
+            s->in_externo &= ~bit;
+        }
+    }
+}
+
+static void esp32_gpio_pull_actualizar(Esp32GpioState *s)
+{
+    uint64_t arriba, abajo;
+
+    taller_pull_mascaras(s->registros_iomux,
+                         s->registros_rtcio, ESP32_GPIO_CANTIDAD_PINES,
+                         0xffffffffffull, &arriba, &abajo);
+    if (s->pull_arriba != arriba || s->pull_abajo != abajo) {
+        s->pull_arriba = arriba;
+        s->pull_abajo = abajo;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             arriba, abajo);
+        taller_puente_pull(arriba, abajo);
     }
 }
 
@@ -232,6 +259,58 @@ static const MemoryRegionOps uart_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+static uint64_t esp32_iomux_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    return s->registros_iomux[addr / 4];
+}
+
+static void esp32_iomux_write(void *opaque, hwaddr addr, uint64_t valor,
+                              unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    s->registros_iomux[addr / 4] = valor;
+    esp32_gpio_pull_actualizar(s);
+}
+
+static const MemoryRegionOps esp32_iomux_ops = {
+    .read = esp32_iomux_read,
+    .write = esp32_iomux_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
+static uint64_t esp32_rtcio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    return s->registros_rtcio[addr / 4];
+}
+
+static void esp32_rtcio_write(void *opaque, hwaddr addr, uint64_t valor,
+                              unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    s->registros_rtcio[addr / 4] = valor;
+    esp32_gpio_pull_actualizar(s);
+}
+
+static const MemoryRegionOps esp32_rtcio_ops = {
+    .read = esp32_rtcio_read,
+    .write = esp32_rtcio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 static void esp32_gpio_reset_hold(Object *obj, ResetType type)
 {
     Esp32GpioState *s = ESP32_GPIO(obj);
@@ -242,7 +321,11 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
     s->enable = 0;
     s->drenador_abierto = 0;
     memset(s->registro_pin, 0, sizeof(s->registro_pin));
-    s->in_externo = ~0ull;
+    /* El cable y la carga de las entradas sueltas sobreviven al reset. */
+    s->in_externo |= 0xffffffffffull & ~s->sueltos;
+    memset(s->registros_iomux, 0, sizeof(s->registros_iomux));
+    memset(s->registros_rtcio, 0, sizeof(s->registros_rtcio));
+    esp32_gpio_pull_actualizar(s);
     /* Reset del chip: conservar sensores armados, cancelar trenes en curso. */
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_del(s->trenes[i].timer);
@@ -286,6 +369,12 @@ static void esp32_gpio_init(Object *obj)
                           TYPE_ESP32_GPIO, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    memory_region_init_io(&s->iomux, obj, &esp32_iomux_ops, s,
+                          "esp32.iomux", TALLER_IOMUX_BYTES);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomux);
+    memory_region_init_io(&s->rtcio, obj, &esp32_rtcio_ops, s,
+                          "esp32.rtcio", TALLER_RTCIO_BYTES);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->rtcio);
 }
 
 static void esp32_gpio_finalize(Object *obj)

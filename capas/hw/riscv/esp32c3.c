@@ -346,7 +346,7 @@ static void esp32c3_taller_recibir(void *opaque, uint8_t tipo,
     Esp32C3MachineState *ms = opaque;
 
     if (tipo == TALLER_TRAMA_ENTRADA && largo >= 2) {
-        esp32c3_gpio_fijar_entrada(&ms->gpio, datos[0], datos[1] != 0);
+        esp32c3_gpio_fijar_entrada(&ms->gpio, datos[0], datos[1]);
     } else if (tipo == TALLER_TRAMA_ANALOGICO && largo >= 3) {
         esp32c3_saradc_fijar_valor(&ms->saradc, datos[0], lduw_le_p(datos + 1));
     } else if (tipo == TALLER_TRAMA_I2C_DISPOSITIVO && largo == 3 &&
@@ -532,6 +532,9 @@ static void esp32c3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ms->gpio), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gpio), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
+        /* Sustituye las lecturas cero/escrituras ignoradas del IO genérico. */
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_IO_MUX_BASE,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gpio), 1), 0);
     }
 
     /* Modelos C3 en sus direcciones propias, antes de recibir por el puente. */

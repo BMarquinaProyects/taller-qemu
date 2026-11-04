@@ -39,10 +39,10 @@ class PruebaGpioS3(gpio_c3.PruebaVerificadorC3):
 
     def test_banco_alto_valido_y_huecos_rechazados(self):
         self.assertEqual(self.comprobar(tramas=self.tramas + [
-            (2, 7, 100, struct.pack("<QQ", 1 << 48, (1 << 48) | 4))]), [])
+            (2, qemu_prueba.VERSION_PUENTE, 100, struct.pack("<QQ", 1 << 48, (1 << 48) | 4))]), [])
         for pin in (22, 23, 24, 25, 49, 63):
             self.assertTrue(self.comprobar(tramas=self.tramas + [
-                (2, 7, 100, struct.pack("<QQ", 0, (1 << pin) | 4))]))
+                (2, qemu_prueba.VERSION_PUENTE, 100, struct.pack("<QQ", 0, (1 << pin) | 4))]))
 
     def test_modelo_real(self):
         ejecutar_modelo(self, "gpio")
@@ -70,9 +70,9 @@ class PruebaPwmS3(pwm_c3.PruebaPwmC3):
             self.assertTrue(self.comprobar(texto=texto))
         for pin in (22, 25, 49, 255):
             self.assertTrue(self.comprobar(tramas=self.tramas + [
-                (4, 7, 100, struct.pack("<BII", pin, 50000, 50000))]))
+                (4, qemu_prueba.VERSION_PUENTE, 100, struct.pack("<BII", pin, 50000, 50000))]))
         self.assertEqual(self.comprobar(tramas=self.tramas + [
-            (4, 7, 100, struct.pack("<BII", 48, 50000, 50000))]), [])
+            (4, qemu_prueba.VERSION_PUENTE, 100, struct.pack("<BII", 48, 50000, 50000))]), [])
 
 
 class PruebaAnalogicoS3(adc_c3.PruebaAnalogicoC3):
@@ -157,10 +157,10 @@ class PruebaModosS3(unittest.TestCase):
         def servidor():
             try:
                 externo.settimeout(3)
-                externo.sendall(qemu_prueba.CABECERA.pack(1, 7, 4, 0) + struct.pack("<I", 7))
+                externo.sendall(qemu_prueba.CABECERA.pack(1, qemu_prueba.VERSION_PUENTE, 4, 0) + struct.pack("<I", qemu_prueba.VERSION_PUENTE))
                 if modo == "s3_gpio":
                     for n, nivel in enumerate((0, 1, 0, 1, 0, 1, 0)):
-                        externo.sendall(qemu_prueba.CABECERA.pack(2, 7, 16, n + 1) +
+                        externo.sendall(qemu_prueba.CABECERA.pack(2, qemu_prueba.VERSION_PUENTE, 16, n + 1) +
                                         struct.pack("<QQ", nivel << 2, 4))
                     # Separar el salto de línea reproduce la fragmentación real de UART.
                     firmware_uart.sendall(b"S3-ANTES=1\r")
@@ -171,7 +171,7 @@ class PruebaModosS3(unittest.TestCase):
                 elif modo == "s3_pwm":
                     for n, (f, c) in enumerate(((50000, 49987), (50000, 250000),
                                                  (100000, 250000), (100000, 0))):
-                        externo.sendall(qemu_prueba.CABECERA.pack(4, 7, 9, n + 1) + struct.pack("<BII", 4, f, c))
+                        externo.sendall(qemu_prueba.CABECERA.pack(4, qemu_prueba.VERSION_PUENTE, 9, n + 1) + struct.pack("<BII", 4, f, c))
                     firmware_uart.sendall(b"TALLER-OK s3_pwm\r\n")
                 else:
                     firmware_uart.sendall(b"S3-A=0\r\n")

@@ -10,6 +10,7 @@
 #include "qapi/error.h"
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32s3_gpio.h"
+#include "hw/gpio/taller_pull.h"
 #include "hw/misc/taller_puente.h"
 #include "hw/misc/esp32c3_ledc.h"
 
@@ -18,15 +19,39 @@ static bool esp32s3_gpio_pin_valido(unsigned pin)
     return pin < ESP32S3_GPIO_PINES && (pin < 22 || pin >= 26);
 }
 
-void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, bool nivel)
+void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, uint8_t nivel)
 {
     if (!esp32s3_gpio_pin_valido(pin)) {
         return;
     }
-    if (nivel) {
-        s->in_externo |= 1ull << pin;
+    uint64_t bit = 1ull << pin;
+    if (nivel == 2) {
+        s->sueltos |= bit;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             s->pull_arriba, s->pull_abajo);
     } else {
-        s->in_externo &= ~(1ull << pin);
+        s->sueltos &= ~bit;
+        if (nivel) {
+            s->in_externo |= bit;
+        } else {
+            s->in_externo &= ~bit;
+        }
+    }
+}
+
+static void esp32s3_gpio_pull_actualizar(ESP32S3GPIOState *s)
+{
+    uint64_t arriba, abajo;
+
+    taller_pull_mascaras(s->registros_iomux,
+                         NULL, ESP32S3_GPIO_PINES,
+                         ESP32S3_GPIO_MASCARA, &arriba, &abajo);
+    if (s->pull_arriba != arriba || s->pull_abajo != abajo) {
+        s->pull_arriba = arriba;
+        s->pull_abajo = abajo;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             arriba, abajo);
+        taller_puente_pull(arriba, abajo);
     }
 }
 
@@ -207,13 +232,42 @@ static const MemoryRegionOps esp32s3_gpio_ops = {
     .impl.max_access_size = 4,
 };
 
+static uint64_t esp32s3_iomux_read(void *opaque, hwaddr addr, unsigned size)
+{
+    ESP32S3GPIOState *s = ESP32S3_GPIO(opaque);
+
+    return s->registros_iomux[addr / 4];
+}
+
+static void esp32s3_iomux_write(void *opaque, hwaddr addr, uint64_t valor,
+                                unsigned size)
+{
+    ESP32S3GPIOState *s = ESP32S3_GPIO(opaque);
+
+    s->registros_iomux[addr / 4] = valor;
+    esp32s3_gpio_pull_actualizar(s);
+}
+
+static const MemoryRegionOps esp32s3_iomux_ops = {
+    .read = esp32s3_iomux_read,
+    .write = esp32s3_iomux_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 static void esp32s3_gpio_reset_hold(Object *obj, ResetType type)
 {
     ESP32S3GPIOState *s = ESP32S3_GPIO(obj);
     bool cambio = s->out || s->enable;
 
     s->out = s->enable = s->drenador_abierto = 0;
-    s->in_externo = ESP32S3_GPIO_MASCARA;
+    /* El cable y la carga de las entradas sueltas sobreviven al reset. */
+    s->in_externo |= ESP32S3_GPIO_MASCARA & ~s->sueltos;
+    memset(s->registros_iomux, 0, sizeof(s->registros_iomux));
+    esp32s3_gpio_pull_actualizar(s);
     memset(s->registro_pin, 0, sizeof(s->registro_pin));
     for (unsigned pin = 0; pin < ESP32S3_GPIO_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32S3_GPIO_SENAL_SOFTWARE;
@@ -249,6 +303,9 @@ static void esp32s3_gpio_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &esp32s3_gpio_ops, s,
                           TYPE_ESP32S3_GPIO, 0x1000);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
+    memory_region_init_io(&s->iomux, obj, &esp32s3_iomux_ops, s,
+                          "esp32s3.iomux", TALLER_IOMUX_BYTES);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomux);
 }
 
 static void esp32s3_gpio_finalize(Object *obj)
