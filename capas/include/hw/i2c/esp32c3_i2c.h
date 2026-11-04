@@ -19,5 +19,7 @@ typedef struct ESP32C3I2CState {
     unsigned tx_lectura, tx_escritura, tx_cantidad;
     unsigned rx_lectura, rx_escritura, rx_cantidad;
     unsigned comando, bytes_hechos;
-    bool ejecutando, ocupado, espera_direccion, respuesta_nack;
+    bool ejecutando, ocupado, espera_direccion;
+    /* SR.RESP_REC tal como lo da el silicio: 1 tras recibir ACK (ver esp32c3_i2c_read). */
+    bool respuesta_ack;
 } ESP32C3I2CState;

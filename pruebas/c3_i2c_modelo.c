@@ -92,6 +92,7 @@ static void prueba_sondeo_y_nack(void)
     sondear(0x3c);
     assert((leer(0x20) & 0x488) == 0x80);
     assert((leer(8) & 0x10) == 0 && !bus.seleccionado);
+    assert(leer(8) & 1); /* RESP_REC = 1: el esclavo dijo ACK (como el silicio, no como el .h). */
     assert(leer(0x58) >> 31 && leer(0x5c) >> 31 && leer(0x60) >> 31);
     assert(!nivel_irq && leer(0x2c) == 0);
     escribir(0x28, 0x480);
@@ -100,7 +101,7 @@ static void prueba_sondeo_y_nack(void)
     assert(!nivel_irq);
     sondear(0x48);
     assert((leer(0x20) & 0x488) == 0x400);
-    assert(nivel_irq && (leer(8) & 1));
+    assert(nivel_irq && !(leer(8) & 1)); /* NACK: RESP_REC = 0. */
     assert(!(leer(0x60) >> 31)); /* STOP posterior a NACK no se ejecuta. */
     escribir(0x24, 0x400);
     assert(!nivel_irq && leer(0x24) == 0);

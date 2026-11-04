@@ -61,7 +61,7 @@ static void esp32c3_i2c_finalizar(ESP32C3I2CState *s)
 static bool esp32c3_i2c_comprobar_ack(ESP32C3I2CState *s, uint32_t cmd,
                                      bool nack)
 {
-    s->respuesta_nack = nack;
+    s->respuesta_ack = !nack;
     if ((cmd & (1u << 8)) && nack != !!(cmd & (1u << 9))) {
         s->registros[C3_I2C_RAW / 4] |= C3_I2C_NACK;
         s->ejecutando = false;
@@ -161,7 +161,13 @@ static uint64_t esp32c3_i2c_read(void *opaque, hwaddr addr, unsigned size)
     }
     switch (addr) {
     case C3_I2C_SR:
-        return s->respuesta_nack | ((uint32_t)s->ocupado << 4) |
+        /*
+         * RESP_REC: los .h de ESP-IDF dicen «0: ACK, 1: NACK», pero el C3 y el S3 reales dan
+         * 1 cuando el esclavo contesta ACK (medido en un C3 rev v0.4, esp32sim PR #282). esp-hal
+         * 1.x se apoya en eso: si TRANS_COMPLETE llega con RESP_REC a 0, devuelve
+         * AcknowledgeCheckFailed(Data). ESP-IDF, Arduino y MicroPython no lo leen.
+         */
+        return s->respuesta_ack | ((uint32_t)s->ocupado << 4) |
                (s->rx_cantidad << 8) | (s->tx_cantidad << 18);
     case C3_I2C_FIFO_ST:
         return s->rx_lectura | (s->rx_escritura << 5) |
@@ -207,7 +213,7 @@ static void esp32c3_i2c_write(void *opaque, hwaddr addr, uint64_t value,
         if (v & C3_I2C_FSM_RST) {
             s->ejecutando = false;
             s->comando = s->bytes_hechos = 0;
-            s->respuesta_nack = false;
+            s->respuesta_ack = false;
             s->registros[addr / 4] &= ~C3_I2C_START;
             esp32c3_i2c_finalizar(s);
         } else if ((v & C3_I2C_START) && (v & C3_I2C_MASTER)) {
@@ -285,7 +291,7 @@ static void esp32c3_i2c_reiniciar(Object *obj, ResetType tipo)
     s->tx_lectura = s->tx_escritura = s->tx_cantidad = 0;
     s->rx_lectura = s->rx_escritura = s->rx_cantidad = 0;
     s->comando = s->bytes_hechos = 0;
-    s->ejecutando = s->respuesta_nack = false;
+    s->ejecutando = s->respuesta_ack = false;
     esp32c3_i2c_actualizar_irq(s);
     /* El esclavo conserva su espejo y puntero durante el reset del maestro. */
 }
