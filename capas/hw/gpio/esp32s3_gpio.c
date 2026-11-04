@@ -3,13 +3,15 @@
  * Copyright (c) 2023 Espressif Systems (Shanghai) Co. Ltd.
  * Copyright (c) 2026 Taller. GPL-2.0-or-later.
  * Dos bancos para GPIO0..21 y GPIO26..48, PAD_DRIVER, matriz de 9 bits y
- * trenes armados. IO_MUX, inversión, IRQ y filtros no están emulados.
+ * trenes armados (ENTRADA_ARMADA y ENTRADA_TREN). IO_MUX aporta los pulls (v8);
+ * inversión, IRQ y filtros no están emulados.
  * Entradas externas inicialmente altas; STRAP es una propiedad independiente.
  */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32s3_gpio.h"
+#include "hw/gpio/taller_pull.h"
 #include "hw/misc/taller_puente.h"
 #include "hw/misc/esp32c3_ledc.h"
 
@@ -18,15 +20,39 @@ static bool esp32s3_gpio_pin_valido(unsigned pin)
     return pin < ESP32S3_GPIO_PINES && (pin < 22 || pin >= 26);
 }
 
-void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, bool nivel)
+void esp32s3_gpio_fijar_entrada(ESP32S3GPIOState *s, uint8_t pin, uint8_t nivel)
 {
     if (!esp32s3_gpio_pin_valido(pin)) {
         return;
     }
-    if (nivel) {
-        s->in_externo |= 1ull << pin;
+    uint64_t bit = 1ull << pin;
+    if (nivel == 2) {
+        s->sueltos |= bit;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             s->pull_arriba, s->pull_abajo);
     } else {
-        s->in_externo &= ~(1ull << pin);
+        s->sueltos &= ~bit;
+        if (nivel) {
+            s->in_externo |= bit;
+        } else {
+            s->in_externo &= ~bit;
+        }
+    }
+}
+
+static void esp32s3_gpio_pull_actualizar(ESP32S3GPIOState *s)
+{
+    uint64_t arriba, abajo;
+
+    taller_pull_mascaras(s->registros_iomux,
+                         NULL, ESP32S3_GPIO_PINES,
+                         ESP32S3_GPIO_MASCARA, &arriba, &abajo);
+    if (s->pull_arriba != arriba || s->pull_abajo != abajo) {
+        s->pull_arriba = arriba;
+        s->pull_abajo = abajo;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             arriba, abajo);
+        taller_puente_pull(arriba, abajo);
     }
 }
 
@@ -53,6 +79,47 @@ int esp32s3_gpio_pin_de_senal(void *opaque, int senal)
         }
     }
     return -1;
+}
+
+/* ENTRADA_TREN (v8): cada paso aplica su nivel por la misma ruta que ENTRADA. */
+static void esp32s3_gpio_paso_tren(void *opaque)
+{
+    ESP32S3GpioTren *t = opaque;
+    TallerTrenRanura *r = &t->gpio->tren.ranuras[t->indice];
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint8_t pin, nivel;
+
+    while (taller_tren_avanzar(r, ahora_ns, &pin, &nivel)) {
+        esp32s3_gpio_fijar_entrada(t->gpio, pin, nivel);
+    }
+    if (r->activa) {
+        timer_mod_ns(t->timer, r->proximo_ns);
+    }
+}
+
+void esp32s3_gpio_tren_entrada(ESP32S3GPIOState *s, const uint8_t *datos, size_t largo)
+{
+    int cancelada;
+    int ranura = taller_tren_recibir(&s->tren, datos, largo, ESP32S3_GPIO_MASCARA,
+                                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                     &cancelada);
+
+    if (cancelada >= 0) {
+        timer_del(s->temporizadores_tren[cancelada].timer);
+    }
+    if (ranura >= 0) {
+        timer_del(s->temporizadores_tren[ranura].timer);
+        esp32s3_gpio_paso_tren(&s->temporizadores_tren[ranura]);
+    }
+}
+
+void esp32s3_gpio_cancelar_tren(ESP32S3GPIOState *s, uint8_t pin)
+{
+    int ranura = taller_tren_cancelar(&s->tren, pin);
+
+    if (ranura >= 0) {
+        timer_del(s->temporizadores_tren[ranura].timer);
+    }
 }
 
 static void esp32s3_gpio_paso_armado(void *opaque)
@@ -207,13 +274,42 @@ static const MemoryRegionOps esp32s3_gpio_ops = {
     .impl.max_access_size = 4,
 };
 
+static uint64_t esp32s3_iomux_read(void *opaque, hwaddr addr, unsigned size)
+{
+    ESP32S3GPIOState *s = ESP32S3_GPIO(opaque);
+
+    return s->registros_iomux[addr / 4];
+}
+
+static void esp32s3_iomux_write(void *opaque, hwaddr addr, uint64_t valor,
+                                unsigned size)
+{
+    ESP32S3GPIOState *s = ESP32S3_GPIO(opaque);
+
+    s->registros_iomux[addr / 4] = valor;
+    esp32s3_gpio_pull_actualizar(s);
+}
+
+static const MemoryRegionOps esp32s3_iomux_ops = {
+    .read = esp32s3_iomux_read,
+    .write = esp32s3_iomux_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 static void esp32s3_gpio_reset_hold(Object *obj, ResetType type)
 {
     ESP32S3GPIOState *s = ESP32S3_GPIO(obj);
     bool cambio = s->out || s->enable;
 
     s->out = s->enable = s->drenador_abierto = 0;
-    s->in_externo = ESP32S3_GPIO_MASCARA;
+    /* El cable y la carga de las entradas sueltas sobreviven al reset. */
+    s->in_externo |= ESP32S3_GPIO_MASCARA & ~s->sueltos;
+    memset(s->registros_iomux, 0, sizeof(s->registros_iomux));
+    esp32s3_gpio_pull_actualizar(s);
     memset(s->registro_pin, 0, sizeof(s->registro_pin));
     for (unsigned pin = 0; pin < ESP32S3_GPIO_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32S3_GPIO_SENAL_SOFTWARE;
@@ -225,6 +321,10 @@ static void esp32s3_gpio_reset_hold(Object *obj, ResetType type)
         timer_del(s->trenes[i].timer);
     }
     timer_del(s->cuanto_armado);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        timer_del(s->temporizadores_tren[i].timer);
+    }
+    taller_tren_reiniciar(&s->tren);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (cambio) {
         taller_puente_gpio(0, 0);
@@ -244,11 +344,22 @@ static void esp32s3_gpio_init(Object *obj)
     }
     s->cuanto_armado = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    esp32s3_gpio_cuanto_armado, s);
+    taller_tren_iniciar(&s->tren);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        s->temporizadores_tren[i].gpio = s;
+        s->temporizadores_tren[i].indice = i;
+        s->temporizadores_tren[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                                       esp32s3_gpio_paso_tren,
+                                                       &s->temporizadores_tren[i]);
+    }
     object_property_set_int(obj, "strap_mode", ESP32S3_STRAP_MODE_FLASH_BOOT,
                             &error_fatal);
     memory_region_init_io(&s->iomem, obj, &esp32s3_gpio_ops, s,
                           TYPE_ESP32S3_GPIO, 0x1000);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
+    memory_region_init_io(&s->iomux, obj, &esp32s3_iomux_ops, s,
+                          "esp32s3.iomux", TALLER_IOMUX_BYTES);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomux);
 }
 
 static void esp32s3_gpio_finalize(Object *obj)
@@ -257,6 +368,10 @@ static void esp32s3_gpio_finalize(Object *obj)
 
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_free(s->trenes[i].timer);
+    }
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        timer_del(s->temporizadores_tren[i].timer);
+        timer_free(s->temporizadores_tren[i].timer);
     }
     timer_free(s->cuanto_armado);
 }

@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include "hw/misc/taller_armado.h"
+#include "hw/misc/taller_tren.h"
+#include "hw/gpio/taller_pull.h"
 
 typedef int SysBusDevice;
 typedef int SysBusDeviceClass;
@@ -34,7 +36,7 @@ typedef struct MemoryRegionOps {
 #define QEMU_CLOCK_VIRTUAL 1
 static int64_t ahora;
 static unsigned cantidad_disparos;
-static QEMUTimer timers[TALLER_ARMADO_RANURAS + 1];
+static QEMUTimer timers[TALLER_ARMADO_RANURAS + 1 + TALLER_TREN_RANURAS];
 static unsigned cantidad_timers;
 static Error *error_fatal;
 
@@ -45,7 +47,7 @@ static int64_t qemu_clock_get_ns(int reloj)
 }
 static QEMUTimer *timer_new_ns(int reloj, void (*callback)(void *), void *opaque)
 {
-    assert(reloj == QEMU_CLOCK_VIRTUAL && cantidad_timers < 9);
+    assert(reloj == QEMU_CLOCK_VIRTUAL && cantidad_timers < sizeof(timers) / sizeof(timers[0]));
     QEMUTimer *t = &timers[cantidad_timers++];
     *t = (QEMUTimer){.callback = callback, .opaque = opaque};
     return t;
@@ -96,6 +98,8 @@ static void taller_puente_disparo(uint8_t pin, int64_t t_ns)
     cantidad_disparos++;
 }
 
+static void taller_puente_pull(uint64_t arriba, uint64_t abajo) {}
+
 /* CABECERA_REAL */
 /* MODELO_REAL */
 
@@ -142,6 +146,9 @@ static QEMUTimer *buscar_cuanto(const Esp32GpioState *gpio)
         bool es_tren = false;
         for (unsigned j = 0; j < TALLER_ARMADO_RANURAS; j++) {
             es_tren |= &timers[i] == gpio->trenes[j].timer;
+        }
+        for (unsigned j = 0; j < TALLER_TREN_RANURAS; j++) {
+            es_tren |= &timers[i] == gpio->temporizadores_tren[j].timer;
         }
         if (!es_tren) {
             return &timers[i];

@@ -36,6 +36,8 @@ class PruebaModelosI2cRmtS3(unittest.TestCase):
                                        puente.index("/* Por bus:")])
         armado = (raiz / "capas/include/hw/misc/taller_armado.h").as_posix()
         codigo = codigo.replace('"hw/misc/taller_armado.h"', f'"{armado}"')
+        tren = (raiz / "capas/include/hw/misc/taller_tren.h").as_posix()
+        codigo = codigo.replace('"hw/misc/taller_tren.h"', f'"{tren}"')
         compilar_ejecutar(codigo, cc)
 
 

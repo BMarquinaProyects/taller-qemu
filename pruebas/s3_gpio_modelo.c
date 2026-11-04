@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include "hw/misc/taller_armado.h"
+#include "hw/misc/taller_tren.h"
+#include "hw/gpio/taller_pull.h"
 typedef int SysBusDevice;
 typedef int MemoryRegion;
 typedef void Object;
@@ -35,10 +37,13 @@ static void taller_puente_disparo(uint8_t pin, int64_t t_ns)
     assert(pin == 48 && t_ns == ahora);
     disparos++;
 }
+static void taller_puente_pull(uint64_t arriba, uint64_t abajo) {}
+
 /* CABECERA_REAL */
 /* MODELO_REAL */
 static ESP32S3GPIOState gpio;
 static QEMUTimer timers[TALLER_ARMADO_RANURAS];
+static QEMUTimer timers_tren[TALLER_TREN_RANURAS];
 static QEMUTimer cuanto;
 static void escribir(hwaddr a, uint32_t v) { esp32s3_gpio_write(&gpio, a, v, 4); }
 static uint32_t leer(hwaddr a) { return esp32s3_gpio_read(&gpio, a, 4); }
@@ -49,6 +54,9 @@ int main(void)
     taller_armado_iniciar(&gpio.armado, 0);
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         gpio.trenes[i] = (ESP32S3GpioTren){&timers[i], &gpio, i};
+    }
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        gpio.temporizadores_tren[i] = (ESP32S3GpioTren){&timers_tren[i], &gpio, i};
     }
     esp32s3_gpio_reset_hold(&gpio, 0);
     assert(leer(0x38) == 4 && leer(0x3c) == 0xfc3fffff && leer(0x40) == 0x1ffff);

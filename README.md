@@ -24,7 +24,7 @@ configurar para añadir RISC-V32; esa primera compilación necesita generar sus 
 
 Usar **qemu-system-riscv32 -machine esp32c3**. El mismo chardev
 `taller-puente` activa HOLA y las tramas GPIO, SPI, PWM, I2C_ESCRITURA, RMT y TIEMPO
-del protocolo **v7**. Bit n significa GPIO n también en el C3. ENTRADA,
+del protocolo **v8**. Bit n significa GPIO n también en el C3. ENTRADA,
 ENTRADA_ARMADA, ANALOGICO, I2C_DISPOSITIVO e I2C_REGISTROS llegan a los modelos
 de la máquina seleccionada mediante un receptor propio; las rutas del ESP32
 clásico se conservan. El C3 admite solamente el bus I2C **0**.
@@ -48,7 +48,7 @@ Inventario de la máquina base `esp-develop-9.2.2-20260417` y trabajo pendiente:
 | Pieza | Estado en C3 |
 |---|---|
 | GPIO | Salida, entrada externa, drenador abierto y trenes conectados al puente. Sin IRQ GPIO ni filtros. |
-| IO_MUX / matriz GPIO | IO_MUX no está emulado: lecturas cero y escrituras ignoradas. PINn y selección de salida conservan valores; LEDC y RMT resuelven el GPIO de su señal de salida, sin inversión. La entrada externa empieza alta, como en el clásico; INPUT_PULLUP funciona con ese reposo, sin simular resistencias ni INPUT_PULLDOWN. |
+| IO_MUX / matriz GPIO | IO_MUX conserva registros y extrae FUN_PU/FUN_PD (bits 8/7); las entradas sueltas siguen esos pulls. PINn y selección de salida conservan valores; LEDC y RMT resuelven el GPIO de su señal de salida, sin inversión. La entrada externa empieza alta hasta que el núcleo imponga o suelte cada pin. |
 | Matriz IRQ | El original ya guarda `irq_levels`, aplica OR por línea y recalcula líneas vieja/nueva al reasignar. Conserva prioridad, umbral y habilitación; no tiene el fallo corregido del clásico. La selección de IRQ por flanco no está emulada. No se sustituye este archivo. |
 | UART y temporizadores | Dos UART con FIFO/timeout/IRQ; dos TIMG con T0 y watchdog; SYSTIMER con dos contadores y tres alarmas. Se conservan los modelos de Espressif. |
 | LEDC | `hw/misc/esp32c3_ledc.c`: cuatro timers y seis canales LS (registros de `soc/ledc_reg.h` del C3). Frecuencia = reloj (APB 80 MHz, RC_FAST 17,5 MHz o XTAL 40 MHz según `LEDC_CONF`) / (CLK_DIV en punto fijo 10.8 × 2^resolución); ciclo = DUTY (4 bits de fracción) / 2^resolución. Cada cambio efectivo manda PWM (tipo 4) al GPIO cuya `FUNCn_OUT_SEL_CFG` tiene la señal 45 + canal; cambiar de pin apaga el anterior. Sin fades, IRQ ni pulsos GPIO. |
@@ -127,7 +127,7 @@ de segmento tiene RAW/ENA/ST/CLR propio; no implica soporte del protocolo SCT.
   de **32768+8192** (límite de MS_DLEN). Una lectura GDMA de cuatro bytes
   añade cuatro ceros MOSI y exige `C3-SPI-MISO=ffffffff` antes de la línea
   única `TALLER-OK c3_spi`. El verificador puro compara los **40968 bytes
-  exactos en orden**, exige bus 2, HOLA v7 y tiempos no decrecientes.
+  exactos en orden**, exige bus 2, HOLA v8 y tiempos no decrecientes.
   Arduino `writeBytes` usa bloques CPU de hasta 64 bytes incluso con un
   buffer grande; la llamada explícita a IDF garantiza que se ejercita GDMA.
 - Las unitarias `c3_*_unitarias.py` prueban los verificadores y los lanzadores
@@ -153,7 +153,7 @@ Las imágenes se compilan como la de GPIO (abajo), cambiando el nombre del sketc
 
 `pruebas/c3_gpio_prueba/c3_gpio_prueba.ino` produce tres pulsos completos en
 GPIO8, lee GPIO9 con INPUT_PULLUP, espera ENTRADA(9, 0), vuelve a leer y termina
-con `TALLER-OK c3`. El verificador exige HOLA v7, niveles/salidas limitados a
+con `TALLER-OK c3`. El verificador exige HOLA v8, niveles/salidas limitados a
 22 bits, tres pulsos habilitados, tiempos no decrecientes y las líneas únicas
 `C3-ANTES=1`, `C3-DESPUES=0`, `TALLER-OK c3`, en ese orden.
 
@@ -239,7 +239,7 @@ protocolo **v7**.
 
 Usar **qemu-system-xtensa -machine esp32s3**. La máquina de las capas
 (`hw/xtensa/esp32s3.c`) sustituye el GPIO mínimo de Espressif y conecta el
-mismo chardev `taller-puente`: HOLA, GPIO, SPI, PWM, DISPARO y TIEMPO **v7**.
+mismo chardev `taller-puente`: HOLA, GPIO, SPI, PWM, DISPARO, TIEMPO y PULL **v8**.
 ENTRADA, ENTRADA_ARMADA y ANALOGICO llegan a su receptor propio, sin cambiar
 el protocolo: las máscaras GPIO ya son de 64 bits. Se conservan los demás
 dispositivos de la máquina base `esp-develop-9.2.2-20260417`.
@@ -261,9 +261,9 @@ con `soc/gpio_reg.h` del core Arduino ESP32 **3.3.12**:
 `GPIO_PINn_REG`, en `0x74 + 4·n`, conserva el valor escrito; PAD_DRIVER
 (bit 2) activa drenador abierto. IN devuelve OUT en salida push-pull, el
 nivel externo en entrada y su AND en salida de drenador abierto. Las
-entradas externas empiezan altas: no se simulan resistencias ni
-INPUT_PULLDOWN. STRAP (`0x38`) conserva la propiedad `strap_mode`, por
-defecto **4**, arranque flash. IO_MUX, IRQ GPIO, filtros e inversión quedan
+entradas externas empiezan altas; al soltarlas siguen los pulls de IO_MUX.
+STRAP (`0x38`) conserva la propiedad `strap_mode`, por
+defecto **4**, arranque flash. IRQ GPIO, filtros e inversión quedan
 pendientes.
 
 `FUNCn_OUT_SEL_CFG`, en `0x554 + 4·n`, conserva el registro completo y usa
@@ -301,7 +301,7 @@ RESTART, circular ni buffers SCT. No genera pulsos de reloj/CS por GPIO.
 
 - `s3_gpio`: tres pulsos completos en **GPIO2**, lectura **GPIO4** con
   INPUT_PULLUP y ENTRADA(4, 0). Exige `S3-ANTES=1`, `S3-DESPUES=0` y
-  `TALLER-OK s3_gpio`, líneas únicas y ordenadas, HOLA v7 y máscaras válidas.
+  `TALLER-OK s3_gpio`, líneas únicas y ordenadas, HOLA v8 y máscaras válidas.
 - `s3_pwm`: **GPIO4**, 50 Hz al 5 % → 25 % → 100 Hz → apagado. Exige las
   tramas PWM en orden, margen del 0,5 % y `TALLER-OK s3_pwm` único.
 - `s3_analogico`: `analogRead(1)`; inyecta ANALOGICO(1, 2048) y luego 4095.
@@ -317,7 +317,7 @@ RESTART, circular ni buffers SCT. No genera pulsos de reloj/CS por GPIO.
 - `s3_spi`: **SCK12/MOSI11/MISO13**, `SPI` Arduino emite `abcd` por CPU.
   Después `spi_master` con DMA automático e ISR envía **32768+8192 bytes**
   de patrón `uint8_t(i)` y lee cuatro bytes por DMA. Exige **40968 bytes
-  MOSI exactos por bus 2**, HOLA v7, `S3-SPI-MISO=ffffffff` y
+  MOSI exactos por bus 2**, HOLA v8, `S3-SPI-MISO=ffffffff` y
   `TALLER-OK s3_spi`, completos y ordenados. Verificador puro, sockets y
   modelos reales SPI2/GDMA/emisor aislados; incluye canales 0..4, SRAM alta,
   INT_SET, STOP/reset, OWNER/EOF, cadenas parciales/cíclicas y regresión C3.
@@ -492,14 +492,14 @@ fragmentación UART, errores y plazo compartido. La compilación de QEMU,
 la ejecución integrada de `todas.sh` en Linux y la prueba del binario Windows
 quedan para el revisor; estas unitarias no certifican el arranque real.
 
-## Protocolo del puente (v7)
+## Protocolo del puente (v8)
 
 Con `-chardev socket,id=taller-puente,host=127.0.0.1,port=<p>,server=on,wait=on`, QEMU envía tramas
-little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=7, u16 longitud_carga, u64 t_ns`.
+little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=8, u16 longitud_carga, u64 t_ns`.
 
 | tipo | carga |
 |---|---|
-| 1 HOLA | `u32 version_protocolo` (= 7) |
+| 1 HOLA | `u32 version_protocolo` (= 8) |
 | 2 GPIO | `u64 niveles, u64 salidas` (bit n = GPIO n) |
 | 3 SPI  | `u8 bus` (clásico: 2 = HSPI, 3 = VSPI; C3/S3: **2 = SPI2/FSPI**) + bytes MOSI de una transacción, troceados si superan 4096 bytes |
 | 4 PWM | `u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm` (9 bytes, sin relleno) |
@@ -507,19 +507,113 @@ little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=7, u16 longitud
 | 6 DISPARO | `u8 pin_disparo`; `t_ns` es el instante virtual del flanco que inicia el tren |
 | 7 RMT | `u8 canal, u8 gpio, u32 tick_ps, u32 símbolos…`: símbolos crudos LE; `t_ns` es el inicio de TX; se envía al terminar |
 | 8 TIEMPO | sin carga; `t_ns` es la hora virtual. Latido cada 10 ms virtuales desde HOLA (v7) |
-| 16 ENTRADA (hacia QEMU) | `u8 pin, u8 nivel`: nivel externo de un pin de entrada (botones, sensores) |
+| 9 PULL | `u64 arriba, u64 abajo` (16 bytes, bit n = GPIO n); pull efectivo, desde v8 |
+| 16 ENTRADA (hacia QEMU) | `u8 pin, u8 nivel`: 0/1 imponen el nivel; 2 suelta el pin desde v8 |
 | 17 ANALOGICO (hacia QEMU) | `u8 gpio, u16 valor` (3 bytes, sin relleno): muestra cruda ADC1, saturada a 4095 |
 | 18 I2C_DISPOSITIVO (hacia QEMU) | `u8 bus, u8 direccion, u8 activo`: alta o baja de una dirección |
 | 19 I2C_REGISTROS (hacia QEMU) | `u8 bus, u8 direccion, u8 registro_inicial, bytes…`: hasta 240 bytes para el espejo |
 | 20 ENTRADA_ARMADA (hacia QEMU) | `u8 pin_disparo, u8 flanco, u32 minimo_ns, u8 pin_salida, u16 n`, seguidos de `n × (u32 espera_ns, u8 nivel)`; `9 + 5·n` bytes, sin relleno |
+| 21 ENTRADA_TREN (hacia QEMU) | `u8 pin, u16 n`, seguidos de `n × (u32 espera_ns, u8 nivel)`; `3 + 5·n` bytes, sin relleno, `n ≤ 64`, nivel 0/1/2; tren inmediato desde la recepción (v8) |
 
 Sin ese chardev, QEMU se comporta como el de Espressif.
+
+La versión 8 permite contactos pasivos: `ENTRADA(pin, 2)` deja de imponer la
+entrada. IO_MUX conserva los registros completos (reset a cero) y extrae
+FUN_PU/FUN_PD, bits 8/7. En el clásico se usa el orden físico de
+`GPIO_PIN_MUX_REG` de ESP-IDF 5.5.6, no el número de GPIO: por ejemplo GPIO15
+está en `+0x3c` y GPIO16 en `+0x4c`. RTC_IO también conserva registros y aporta
+los pulls de `rtc_io_desc`: el pull efectivo es el OR con IO_MUX, sin modelar
+la selección RTC/digital. GPIO34–39 carecen de pulls, incluso al escribir
+FUN_PU/FUN_PD. C3 y S3 usan IO_MUX en `+4+4·GPIO`; en S3 no cambia RTC_IO.
+
+Un pin suelto lee 1 con pull-up y 0 con pull-down. Con ambos se elige 1:
+en el silicio es indefinido y el pull-up interno del ESP32 es algo más fuerte.
+Sin ninguno conserva su último nivel externo, como simplificación determinista
+de la carga del pad, sin simular su descarga. Se recalcula al soltar y al cambiar
+pulls; un nivel impuesto ignora las resistencias. ENTRADA 0/1 y los pasos
+armados vuelven a imponer el pin. El reset conserva `sueltos` y su nivel,
+pero borra los registros y las máscaras de pull. El reposo inicial sigue alto
+por compatibilidad hasta recibir entradas externas.
+
+PULL se envía una vez inmediatamente después de HOLA y después solo cuando
+cambia alguna máscara, con tiempo virtual y bits altos a cero en C3. SPI
+pendiente se vacía antes del aviso. Un receptor antiguo puede saltar el tipo 9;
+un QEMU anterior interpreta ENTRADA 2 como 1, el comportamiento previo.
+
+Pruebas M-239: `pull_unitarias.py` compila los tres GPIO y el emisor reales
+aislados con GCC/Clang o MSVC C11. Comprueba tablas, registros, OR RTC/digital,
+GPIO34 sin pull, cuatro estados sueltos, cambios con entrada suelta/impuesta,
+reset, armados y PULL sin duplicados; los sockets prueban UART fragmentada
+y la inyección de los tres modos. Las pruebas integradas `pull`, `c3_pull` y
+`s3_pull`, incluidas en `todas.sh`, usan GPIO15/16/34, GPIO9 y GPIO15,
+respectivamente. Sembrarán cero y enviarán ENTRADA 2 antes de autorizar las
+lecturas por UART, con dos latidos virtuales entre inyección y autorización.
+Comprueban `PULL-ARRIBA=1`, `PULL-ABAJO=0`, `SIN-PULL=0`, GPIO34 conservando
+cero y `IMPUESTO=0` con pull-up activo, además de las máscaras PULL esperadas.
+
+Los tres sketches e imágenes fusionadas DIO de 4 MiB se compilaron con el CLI
+de Taller 1.5.1 y Arduino ESP32 3.3.12. Para reproducirlos:
+
+```powershell
+$cli = "$env:APPDATA\dev.taller.app\arduino-cli\1.5.1\arduino-cli.exe"
+$config = "$env:APPDATA\dev.taller.app\arduino\arduino-cli.yaml"
+$casos = @(
+  @('pull_prueba', 'esp32:esp32:esp32:FlashMode=dio'),
+  @('c3_pull_prueba', 'esp32:esp32:esp32c3:FlashMode=dio,FlashFreq=40,CDCOnBoot=default'),
+  @('s3_pull_prueba', 'esp32:esp32:esp32s3:FlashMode=dio,FlashSize=4M,PSRAM=disabled,CDCOnBoot=default'),
+  @('tren_prueba', 'esp32:esp32:esp32:FlashMode=dio,FlashFreq=40')
+)
+foreach ($caso in $casos) {
+  $nombre, $fqbn = $caso
+  $compilacion = Join-Path $PWD ".trabajo\$nombre"
+  $env:ARDUINO_BUILD_CACHE_PATH = Join-Path $PWD ".trabajo\cache-$nombre"
+  & $cli --config-file $config compile --fqbn $fqbn --build-path $compilacion "pruebas/$nombre"
+  if ($LASTEXITCODE -ne 0) { throw "Falló $nombre" }
+  Copy-Item "$compilacion\$nombre.ino.merged.bin" "pruebas/$nombre.flash.bin"
+}
+```
+
+```sh
+PYTHONIOENCODING=utf-8 python3 -m unittest discover -s pruebas -p '*_unitarias.py'
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa pull pruebas/pull_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-riscv32 c3_pull pruebas/c3_pull_prueba.flash.bin
+python3 pruebas/qemu_prueba.py /ruta/qemu-system-xtensa s3_pull pruebas/s3_pull_prueba.flash.bin
+```
+
+### ENTRADA_TREN (tipo 21, v8)
+
+Secuencia **inmediata** de niveles en tiempo virtual, sin esperar un flanco del
+firmware: el rebote de un contacto (abre y cierra varias veces en 1–5 ms) o el
+hueco de un conmutador «break-before-make». `ENTRADA_ARMADA` no sirve para eso,
+porque solo arranca con un flanco de salida.
+
+- Carga `u8 pin, u16 n, n × (u32 espera_ns, u8 nivel)`, LE y sin relleno: `3 + 5·n`
+  bytes, `n ≤ 64`, nivel 0, 1 o 2 (suelto, como en ENTRADA). `n = 0` solo cancela
+  el tren pendiente del pin.
+- La primera espera cuenta desde que llega la trama; las demás, desde el paso
+  anterior (plazos acumulativos: una atención tardía no desplaza los siguientes).
+  Cada paso aplica su nivel por la misma ruta que ENTRADA; una espera 0 se aplica
+  al momento.
+- Un tren nuevo en el mismo pin sustituye al pendiente. `ENTRADA` en ese pin
+  también lo cancela; un paso de `ENTRADA_ARMADA` no (son independientes).
+- Ocho ranuras por chip; un noveno pin sustituye al tren más antiguo. El reset
+  del chip cancela los trenes pendientes.
+- Una carga inválida (largo que no cuadra, `n > 64`, nivel > 2 o pin fuera del
+  chip: clásico 0..39, C3 0..21, S3 0..21 y 26..48) se ignora entera y no cancela nada.
+
+La lógica pura está en `capas/include/hw/misc/taller_tren.h` y se prueba aislada
+con `pruebas/tren_logica.c` (`tren_unitarias.py`). La prueba integrada `tren`
+(en `todas.sh`) pone GPIO16 con `INPUT_PULLUP`, manda `0 (0 µs), 2 (300 µs),
+0 (300 µs), 2 (300 µs), 0 (300 µs)` y el sketch, que cuenta flancos leyendo en
+un bucle cerrado durante 50 ms (el GPIO no genera IRQ), exige `FLANCOS=4` y
+`NIVEL=0`. Después manda `2 (0 µs), 0 (20 ms)` seguido de `ENTRADA(16, 1)` y exige
+`CANCELADO=1`: el paso de 20 ms no llega.
 
 La versión 7 añade TIEMPO: un latido cada 10 ms virtuales con la hora del ESP32, para que el
 receptor la sepa aunque el firmware no toque ningún periférico (el arranque o un programa que solo
 usa el Serial). Taller lo usa como reloj de los escenarios. Un receptor que no conozca el tipo 8 lo salta.
 La versión 6 añade RMT a la versión 5, conserva las cargas anteriores y acepta las
-tramas entrantes anteriores. HOLA y todas las tramas salientes anuncian 6.
+tramas entrantes anteriores. HOLA y todas las tramas salientes anuncian ahora 8.
 La versión 5 añade ENTRADA_ARMADA y DISPARO a la versión 4, conservando sus cargas.
 La versión 4 añade I2C a la versión 3, conservando las cargas anteriores. La versión 3
 añade PWM y ANALOGICO a la versión 2. La frecuencia se expresa en milihercios
@@ -670,7 +764,7 @@ bash pruebas/todas.sh /ruta/qemu-system-xtensa
 escribe `b"abcd"`, escribe `bytes(range(256)) * 160`, lee cuatro bytes y exige
 `ffffffff`; termina con `TALLER-OK spi_dma`. El modo `spi_dma` introduce ese
 programa por REPL raw paste, con control de ventana y plazo de espera. Exige
-HOLA v7 y **40968 bytes exactos de VSPI**: los cuatro iniciales, el framebuffer
+HOLA v8 y **40968 bytes exactos de VSPI**: los cuatro iniciales, el framebuffer
 y los cuatro ceros MOSI que genera `read(4)`. Rechaza pérdidas, sobrantes,
 cambios de orden y excepciones aunque aparezca la marca de éxito.
 Cada ejecución usa una copia temporal de la flash para proteger la imagen

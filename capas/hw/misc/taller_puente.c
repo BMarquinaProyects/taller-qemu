@@ -20,6 +20,8 @@
 
 static CharBackend puente_fe;
 static bool puente_activo;
+/* Se conservan también antes de conectar el chardev, para el saludo inicial. */
+static uint64_t pull_arriba, pull_abajo;
 
 /* Tramas que llegan del programa externo: se acumulan hasta tener una entera. */
 static TallerPuenteReceptor receptor_entrante;
@@ -106,6 +108,30 @@ static void latir(void *opaque)
     timer_mod_ns(latido, siguiente_latido);
 }
 
+static void enviar_pull(void)
+{
+    uint8_t carga[16];
+
+    for (int b = 0; b < BUSES_SPI; b++) {
+        taller_puente_spi_fin(b);
+    }
+    stq_le_p(carga, pull_arriba);
+    stq_le_p(carga + 8, pull_abajo);
+    enviar(TALLER_TRAMA_PULL, carga, sizeof(carga));
+}
+
+void taller_puente_pull(uint64_t arriba, uint64_t abajo)
+{
+    if (pull_arriba == arriba && pull_abajo == abajo) {
+        return;
+    }
+    pull_arriba = arriba;
+    pull_abajo = abajo;
+    if (puente_activo) {
+        enviar_pull();
+    }
+}
+
 void taller_puente_disparo(uint8_t pin, int64_t t_ns)
 {
     if (!puente_activo) {
@@ -155,6 +181,7 @@ void taller_puente_iniciar(Chardev *chr, TallerPuenteReceptor receptor,
     puente_activo = true;
     stl_le_p(version, TALLER_PUENTE_VERSION);
     enviar(TALLER_TRAMA_HOLA, version, sizeof(version));
+    enviar_pull();
     latido = timer_new_ns(QEMU_CLOCK_VIRTUAL, latir, NULL);
     siguiente_latido = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TALLER_PUENTE_LATIDO_NS;
     timer_mod_ns(latido, siguiente_latido);

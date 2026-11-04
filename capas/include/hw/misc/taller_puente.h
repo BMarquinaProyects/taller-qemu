@@ -2,10 +2,10 @@
  * Puente de Taller: envía a un programa externo, por un chardev, lo que el firmware
  * hace con los pines (GPIO), SPI, PWM, I2C y RMT, con marca de tiempo virtual.
  *
- * Protocolo v7 (little-endian; v6 + TIEMPO). Cabecera de 12 bytes:
- *   u8 tipo, u8 version (=7), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
+ * Protocolo v8 (little-endian; v7 + PULL, entradas sueltas y ENTRADA_TREN). Cabecera de 12 bytes:
+ *   u8 tipo, u8 version (=8), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
  * Tipos (QEMU -> programa externo):
- *   1 HOLA  carga: u32 version_protocolo (=7)
+ *   1 HOLA  carga: u32 version_protocolo (=8)
  *   2 GPIO  carga: u64 niveles, u64 salidas   (bit n = GPIO n)
  *   3 SPI   carga: u8 bus (2 = HSPI, 3 = VSPI) + bytes MOSI de una transacción (máx. 4096)
  *   4 PWM   carga: u8 gpio, u32 frecuencia_mHz, u32 ciclo_ppm (9 bytes, sin relleno)
@@ -22,9 +22,17 @@
  *   8 TIEMPO sin carga; t_ns = reloj virtual (desde v7). Latido cada 10 ms
  *           virtuales desde HOLA: el receptor sabe la hora del ESP32 aunque
  *           el firmware no toque ningún periférico (arranque, Serial puro).
+ *   9 PULL carga: u64 arriba, u64 abajo (16 bytes; bit n = GPIO n; desde v8).
+ *           Pull efectivo de IO_MUX (y OR con RTC_IO en el clásico).
+ *           Se envía al cambiar las máscaras y justo después de HOLA;
+ *           t_ns = reloj virtual. En el C3 la parte alta es cero.
  * Tipos (programa externo -> QEMU; t_ns se ignora):
  *  16 ENTRADA carga: u8 pin, u8 nivel  (nivel externo de un pin de entrada; t_ns se ignora)
- *             disponible desde v2
+ *             disponible desde v2; nivel 2 = suelto desde v8.
+ *             Suelto: arriba -> 1, abajo -> 0, ambos -> 1 (silicio indefinido;
+ *             PU algo más fuerte). Sin pull conserva el último nivel: carga
+ *             del pad simplificada de forma determinista, sin tiempo de descarga.
+ *             Un nivel 0/1, también armado, vuelve a imponer la entrada.
  *  17 ANALOGICO carga: u8 gpio, u16 valor (3 bytes, sin relleno; disponible desde v3)
  *              valor ADC1 de 12 bits, saturado a 4095; GPIO ajenos a ADC1 se ignoran
  *              Clásico: GPIO 36,37,38,39,32,33,34,35 -> ADC1 0,1,2,3,4,5,6,7.
@@ -45,6 +53,16 @@
  *              antigüedad >= minimo_ns en el nivel opuesto. Armado persistente.
  *              Mientras suena no se redispara; rearmar/desarmar afecta al futuro,
  *              nunca a los pasos en curso. Una carga inválida se ignora entera.
+ *  21 ENTRADA_TREN (desde v8): u8 pin, u16 n, n*(u32 espera_ns, u8 nivel).
+ *              Sin relleno: 3+5*n bytes; n<=64; nivel 0, 1 o 2 (suelto).
+ *              Tren inmediato: la primera espera cuenta desde la recepción;
+ *              las demás, desde el paso anterior. Cada paso va por la ruta
+ *              de ENTRADA. Un tren nuevo en el pin sustituye al pendiente;
+ *              n=0 solo lo cancela; ENTRADA en el pin también lo cancela;
+ *              un paso de ENTRADA_ARMADA no. Ocho ranuras: un noveno pin
+ *              sustituye al tren más antiguo. El reset cancela los trenes.
+ *              Carga inválida (largo, n, nivel o pin fuera del chip): se
+ *              ignora entera. Lógica pura en hw/misc/taller_tren.h.
  *
  * Se activa solo si existe un chardev con id "taller-puente".
  * Cada máquina recibe sus cargas mediante TallerPuenteReceptor. C3 y S3
@@ -59,7 +77,7 @@
 
 #define TYPE_TALLER_SPI "taller.spi"
 #define TALLER_PUENTE_CHARDEV "taller-puente"
-#define TALLER_PUENTE_VERSION 7
+#define TALLER_PUENTE_VERSION 8
 /* Cada cuánto se manda TIEMPO, en ns de QEMU_CLOCK_VIRTUAL. */
 #define TALLER_PUENTE_LATIDO_NS (10 * 1000 * 1000)
 
@@ -72,11 +90,13 @@ enum {
     TALLER_TRAMA_DISPARO = 6,
     TALLER_TRAMA_RMT = 7,
     TALLER_TRAMA_TIEMPO = 8,
+    TALLER_TRAMA_PULL = 9,
     TALLER_TRAMA_ENTRADA = 16,
     TALLER_TRAMA_ANALOGICO = 17,
     TALLER_TRAMA_I2C_DISPOSITIVO = 18,
     TALLER_TRAMA_I2C_REGISTROS = 19,
     TALLER_TRAMA_ENTRADA_ARMADA = 20,
+    TALLER_TRAMA_ENTRADA_TREN = 21,
 };
 
 /* Receptor propio de la máquina; recibe una carga completa, sin cabecera. */
@@ -87,6 +107,7 @@ void taller_puente_iniciar(Chardev *chr, TallerPuenteReceptor receptor,
 bool taller_puente_activo(void);
 /* Vuelca antes cualquier SPI pendiente, para que el orden sea el real. */
 void taller_puente_gpio(uint64_t niveles, uint64_t salidas);
+void taller_puente_pull(uint64_t arriba, uint64_t abajo);
 void taller_puente_pwm(uint8_t gpio, uint32_t frecuencia_mhz, uint32_t ciclo_ppm);
 void taller_puente_disparo(uint8_t pin, int64_t t_ns);
 void taller_puente_rmt(uint8_t canal, uint8_t gpio, uint32_t tick_ps,

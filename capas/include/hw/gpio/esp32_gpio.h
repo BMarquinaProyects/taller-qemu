@@ -5,6 +5,7 @@
 #include "hw/registerfields.h"
 #include "qemu/timer.h"
 #include "hw/misc/taller_armado.h"
+#include "hw/misc/taller_tren.h"
 
 #define TYPE_ESP32_GPIO "esp32.gpio"
 #define ESP32_GPIO(obj)             OBJECT_CHECK(Esp32GpioState, (obj), TYPE_ESP32_GPIO)
@@ -49,24 +50,38 @@ typedef struct Esp32GpioState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+    MemoryRegion iomux;
+    MemoryRegion rtcio;
+    uint32_t registros_iomux[0x2000 / 4];
+    uint32_t registros_rtcio[0x400 / 4];
+
     qemu_irq irq;
     uint32_t strap_mode;
     /* Taller: bit n = GPIO n (0-39) */
     uint64_t out;        /* nivel que el firmware escribe */
     uint64_t enable;     /* 1 = el pin es salida */
     uint64_t in_externo; /* nivel que llega desde fuera a los pines de entrada (por defecto, todo a 1) */
+    uint64_t pull_arriba;
+    uint64_t pull_abajo;
+    uint64_t sueltos;
     uint32_t seleccion_salida[ESP32_GPIO_CANTIDAD_PINES];
     uint32_t registro_pin[ESP32_GPIO_CANTIDAD_PINES]; /* GPIO_PINn_REG */
     uint64_t drenador_abierto;                         /* bit n = PAD_DRIVER del pin n */
     TallerArmado armado;
     Esp32GpioTemporizadorArmado trenes[TALLER_ARMADO_RANURAS];
     QEMUTimer *cuanto_armado;
+    TallerTren tren;                                   /* ENTRADA_TREN (v8) */
+    Esp32GpioTemporizadorArmado temporizadores_tren[TALLER_TREN_RANURAS];
 } Esp32GpioState;
 
-/* Taller: nivel que llega desde fuera a un pin de entrada (botones, sensores…). */
-void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel);
+/* Taller: 0/1 imponen el pin; 2 lo suelta y resuelve sus pulls internos. */
+void esp32_gpio_fijar_entrada(uint8_t pin, uint8_t nivel);
 /* Carga ENTRADA_ARMADA ya separada de su cabecera; ignora cargas inválidas. */
 void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo);
+/* Carga ENTRADA_TREN sin cabecera; ignora cargas inválidas. */
+void esp32_gpio_tren_entrada(const uint8_t *datos, size_t largo);
+/* Un ENTRADA del puente cancela el tren pendiente del pin. */
+void esp32_gpio_cancelar_tren(uint8_t pin);
 /* Primer pin conectado a la señal de la matriz de salida, o -1. */
 int esp32_gpio_pin_de_senal(int senal);
 

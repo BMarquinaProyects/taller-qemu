@@ -18,6 +18,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/gpio/esp32_gpio.h"
+#include "hw/gpio/taller_pull.h"
 #include "hw/misc/esp32_ledc.h"
 #include "hw/misc/taller_puente.h"
 
@@ -40,15 +41,41 @@ int esp32_gpio_pin_de_senal(int senal)
     return -1;
 }
 
-void esp32_gpio_fijar_entrada(uint8_t pin, bool nivel)
+void esp32_gpio_fijar_entrada(uint8_t pin, uint8_t nivel)
 {
-    if (!gpio_del_chip || pin > 39) {
+    Esp32GpioState *s = gpio_del_chip;
+
+    if (!s || pin > 39) {
         return;
     }
-    if (nivel) {
-        gpio_del_chip->in_externo |= 1ull << pin;
+    uint64_t bit = 1ull << pin;
+    if (nivel == 2) {
+        s->sueltos |= bit;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             s->pull_arriba, s->pull_abajo);
     } else {
-        gpio_del_chip->in_externo &= ~(1ull << pin);
+        s->sueltos &= ~bit;
+        if (nivel) {
+            s->in_externo |= bit;
+        } else {
+            s->in_externo &= ~bit;
+        }
+    }
+}
+
+static void esp32_gpio_pull_actualizar(Esp32GpioState *s)
+{
+    uint64_t arriba, abajo;
+
+    taller_pull_mascaras(s->registros_iomux,
+                         s->registros_rtcio, ESP32_GPIO_CANTIDAD_PINES,
+                         0xffffffffffull, &arriba, &abajo);
+    if (s->pull_arriba != arriba || s->pull_abajo != abajo) {
+        s->pull_arriba = arriba;
+        s->pull_abajo = abajo;
+        s->in_externo = taller_pull_resolver(s->in_externo, s->sueltos,
+                                             arriba, abajo);
+        taller_puente_pull(arriba, abajo);
     }
 }
 
@@ -56,6 +83,52 @@ void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo)
 {
     if (gpio_del_chip && largo >= 9 && datos[0] < 40 && datos[6] < 40) {
         taller_armado_recibir(&gpio_del_chip->armado, datos, largo);
+    }
+}
+
+/* ENTRADA_TREN (v8): cada paso aplica su nivel por la misma ruta que ENTRADA. */
+static void esp32_gpio_paso_tren(void *opaque)
+{
+    Esp32GpioTemporizadorArmado *t = opaque;
+    TallerTrenRanura *r = &t->gpio->tren.ranuras[t->indice];
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint8_t pin, nivel;
+
+    while (taller_tren_avanzar(r, ahora_ns, &pin, &nivel)) {
+        esp32_gpio_fijar_entrada(pin, nivel);
+    }
+    if (r->activa) {
+        timer_mod_ns(t->timer, r->proximo_ns);
+    }
+}
+
+void esp32_gpio_tren_entrada(const uint8_t *datos, size_t largo)
+{
+    Esp32GpioState *s = gpio_del_chip;
+    int cancelada, ranura;
+
+    if (!s) {
+        return;
+    }
+    ranura = taller_tren_recibir(&s->tren, datos, largo, 0xffffffffffull,
+                                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                 &cancelada);
+    if (cancelada >= 0) {
+        timer_del(s->temporizadores_tren[cancelada].timer);
+    }
+    if (ranura >= 0) {
+        timer_del(s->temporizadores_tren[ranura].timer);
+        esp32_gpio_paso_tren(&s->temporizadores_tren[ranura]);
+    }
+}
+
+void esp32_gpio_cancelar_tren(uint8_t pin)
+{
+    Esp32GpioState *s = gpio_del_chip;
+    int ranura = s ? taller_tren_cancelar(&s->tren, pin) : -1;
+
+    if (ranura >= 0) {
+        timer_del(s->temporizadores_tren[ranura].timer);
     }
 }
 
@@ -232,6 +305,58 @@ static const MemoryRegionOps uart_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+static uint64_t esp32_iomux_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    return s->registros_iomux[addr / 4];
+}
+
+static void esp32_iomux_write(void *opaque, hwaddr addr, uint64_t valor,
+                              unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    s->registros_iomux[addr / 4] = valor;
+    esp32_gpio_pull_actualizar(s);
+}
+
+static const MemoryRegionOps esp32_iomux_ops = {
+    .read = esp32_iomux_read,
+    .write = esp32_iomux_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
+static uint64_t esp32_rtcio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    return s->registros_rtcio[addr / 4];
+}
+
+static void esp32_rtcio_write(void *opaque, hwaddr addr, uint64_t valor,
+                              unsigned size)
+{
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+
+    s->registros_rtcio[addr / 4] = valor;
+    esp32_gpio_pull_actualizar(s);
+}
+
+static const MemoryRegionOps esp32_rtcio_ops = {
+    .read = esp32_rtcio_read,
+    .write = esp32_rtcio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 static void esp32_gpio_reset_hold(Object *obj, ResetType type)
 {
     Esp32GpioState *s = ESP32_GPIO(obj);
@@ -242,12 +367,20 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
     s->enable = 0;
     s->drenador_abierto = 0;
     memset(s->registro_pin, 0, sizeof(s->registro_pin));
-    s->in_externo = ~0ull;
+    /* El cable y la carga de las entradas sueltas sobreviven al reset. */
+    s->in_externo |= 0xffffffffffull & ~s->sueltos;
+    memset(s->registros_iomux, 0, sizeof(s->registros_iomux));
+    memset(s->registros_rtcio, 0, sizeof(s->registros_rtcio));
+    esp32_gpio_pull_actualizar(s);
     /* Reset del chip: conservar sensores armados, cancelar trenes en curso. */
     for (unsigned i = 0; i < TALLER_ARMADO_RANURAS; i++) {
         timer_del(s->trenes[i].timer);
     }
     timer_del(s->cuanto_armado);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        timer_del(s->temporizadores_tren[i].timer);
+    }
+    taller_tren_reiniciar(&s->tren);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32_GPIO_SENAL_SOFTWARE;
@@ -278,6 +411,14 @@ static void esp32_gpio_init(Object *obj)
     }
     s->cuanto_armado = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    esp32_gpio_cuanto_armado, s);
+    taller_tren_iniciar(&s->tren);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        s->temporizadores_tren[i].gpio = s;
+        s->temporizadores_tren[i].indice = i;
+        s->temporizadores_tren[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                                       esp32_gpio_paso_tren,
+                                                       &s->temporizadores_tren[i]);
+    }
 
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
@@ -286,6 +427,12 @@ static void esp32_gpio_init(Object *obj)
                           TYPE_ESP32_GPIO, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    memory_region_init_io(&s->iomux, obj, &esp32_iomux_ops, s,
+                          "esp32.iomux", TALLER_IOMUX_BYTES);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomux);
+    memory_region_init_io(&s->rtcio, obj, &esp32_rtcio_ops, s,
+                          "esp32.rtcio", TALLER_RTCIO_BYTES);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->rtcio);
 }
 
 static void esp32_gpio_finalize(Object *obj)
@@ -298,6 +445,10 @@ static void esp32_gpio_finalize(Object *obj)
     }
     timer_del(s->cuanto_armado);
     timer_free(s->cuanto_armado);
+    for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
+        timer_del(s->temporizadores_tren[i].timer);
+        timer_free(s->temporizadores_tren[i].timer);
+    }
     if (gpio_del_chip == s) {
         gpio_del_chip = NULL;
     }
