@@ -137,6 +137,24 @@ void esp32c3_gpio_cancelar_tren(ESP32C3GPIOState *s, uint8_t pin)
     }
 }
 
+/* UNHILO (v9): los sensores 1-Wire contestan aquí mismo, con el reloj virtual (M-244 de Taller). */
+void esp32c3_gpio_unhilo(ESP32C3GPIOState *s, const uint8_t *datos, size_t largo)
+{
+    taller_unhilo_recibir(&s->unhilo, datos, largo, ESP32C3_GPIO_MASCARA);
+}
+
+static void esp32c3_gpio_observar_unhilo(ESP32C3GPIOState *s)
+{
+    TallerUnHiloPulso pulsos[TALLER_UNHILO_BUSES];
+    unsigned n = taller_unhilo_observar(&s->unhilo, s->out, s->enable,
+                                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), pulsos);
+
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t carga[13];
+        esp32c3_gpio_tren_entrada(s, carga, taller_unhilo_tren(&pulsos[i], carga));
+    }
+}
+
 static void esp32c3_gpio_paso_armado(void *opaque)
 {
     ESP32C3GpioTren *t = opaque;
@@ -241,6 +259,7 @@ static void esp32c3_gpio_write(void *opaque, hwaddr addr, uint64_t value,
     if (s->out != out_antes || s->enable != enable_antes) {
         taller_puente_gpio(s->out, s->enable);
         esp32c3_gpio_observar_armados(s);
+        esp32c3_gpio_observar_unhilo(s);
     }
 }
 
@@ -304,6 +323,7 @@ static void esp32c3_gpio_reset_hold(Object *obj, ResetType type)
         timer_del(s->temporizadores_tren[i].timer);
     }
     taller_tren_reiniciar(&s->tren);
+    taller_unhilo_reiniciar(&s->unhilo);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (cambio) {
         taller_puente_gpio(0, 0);
@@ -322,6 +342,7 @@ static void esp32c3_gpio_init(Object *obj)
                                         esp32c3_gpio_paso_armado, &s->trenes[i]);
     }
     taller_tren_iniciar(&s->tren);
+    taller_unhilo_iniciar(&s->unhilo);
     for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
         s->temporizadores_tren[i].gpio = s;
         s->temporizadores_tren[i].indice = i;

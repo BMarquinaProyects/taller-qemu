@@ -2,7 +2,7 @@
  * Puente de Taller: envía a un programa externo, por un chardev, lo que el firmware
  * hace con los pines (GPIO), SPI, PWM, I2C y RMT, con marca de tiempo virtual.
  *
- * Protocolo v8 (little-endian; v7 + PULL, entradas sueltas y ENTRADA_TREN). Cabecera de 12 bytes:
+ * Protocolo v9 (little-endian; v8 + UNHILO, los DS18B20 dentro de QEMU). Cabecera de 12 bytes:
  *   u8 tipo, u8 version (=8), u16 longitud_carga, u64 t_ns (QEMU_CLOCK_VIRTUAL)
  * Tipos (QEMU -> programa externo):
  *   1 HOLA  carga: u32 version_protocolo (=8)
@@ -63,6 +63,14 @@
  *              sustituye al tren más antiguo. El reset cancela los trenes.
  *              Carga inválida (largo, n, nivel o pin fuera del chip): se
  *              ignora entera. Lógica pura en hw/misc/taller_tren.h.
+ *  22 UNHILO (desde v9): u8 pin, u8 rom[8], i16 medida (1/16 °C, LE), u8 bits
+ *              (bit 0 = presente). Da de alta, actualiza o quita (bit 0 a 0) un
+ *              DS18B20 en un bus 1-Wire de ese pin; hasta 4 buses y 8 sensores
+ *              por bus. QEMU contesta las ranuras él solo (reset y presencia,
+ *              Read/Match/Skip/Search/Alarm Search ROM, Convert T, Read/Write/
+ *              Copy Scratchpad, Recall E2 y Read Power Supply) imponiendo pulsos
+ *              bajos por la ruta de ENTRADA_TREN. Carga de 12 bytes exactos.
+ *              Lógica pura en hw/misc/taller_unhilo.h.
  *
  * Se activa solo si existe un chardev con id "taller-puente".
  * Cada máquina recibe sus cargas mediante TallerPuenteReceptor. C3 y S3
@@ -77,7 +85,7 @@
 
 #define TYPE_TALLER_SPI "taller.spi"
 #define TALLER_PUENTE_CHARDEV "taller-puente"
-#define TALLER_PUENTE_VERSION 8
+#define TALLER_PUENTE_VERSION 9
 /* Cada cuánto se manda TIEMPO, en ns de QEMU_CLOCK_VIRTUAL. */
 #define TALLER_PUENTE_LATIDO_NS (10 * 1000 * 1000)
 
@@ -97,6 +105,7 @@ enum {
     TALLER_TRAMA_I2C_REGISTROS = 19,
     TALLER_TRAMA_ENTRADA_ARMADA = 20,
     TALLER_TRAMA_ENTRADA_TREN = 21,
+    TALLER_TRAMA_UNHILO = 22,
 };
 
 /* Receptor propio de la máquina; recibe una carga completa, sin cabecera. */

@@ -45,7 +45,7 @@ static void comprobar(size_t offset, uint8_t tipo, unsigned largo)
 {
     uint8_t tiempo[8];
     stq_le_p(tiempo, INT64_C(0x123456789));
-    assert(salida[offset] == tipo && salida[offset + 1] == 8);
+    assert(salida[offset] == tipo && salida[offset + 1] == TALLER_PUENTE_VERSION);
     assert(salida[offset + 2] == largo && salida[offset + 3] == 0);
     assert(!memcmp(salida + offset + 4, tiempo, 8));
 }
@@ -54,7 +54,7 @@ int main(void)
 {
     taller_puente_iniciar(NULL, NULL, NULL);
     comprobar(0, 1, 4);
-    assert(salida[12] == 8 && !salida[13] && !salida[14] && !salida[15]);
+    assert(salida[12] == TALLER_PUENTE_VERSION && !salida[13] && !salida[14] && !salida[15]);
     comprobar(16, 9, 16);
     assert(usados == 44);
     for (unsigned i = 28; i < 44; i++) { assert(salida[i] == 0); }

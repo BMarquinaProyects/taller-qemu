@@ -47,7 +47,7 @@ EFUSE_ECO3[13] = 0x80
 EFUSE_ECO3[22] = 0x10
 CABECERA = struct.Struct("<BBHQ")  # tipo, version, longitud_carga, t_ns
 # Versión del protocolo del puente que compila este repo (TALLER_PUENTE_VERSION).
-VERSION_PUENTE = 8
+VERSION_PUENTE = 9
 TIPO_TIEMPO = 8
 TIPO_PULL = 9
 LATIDO_NS = 10_000_000
@@ -637,6 +637,107 @@ def tren(qemu: str, firmware: str) -> int:
         print("FALLO", error)
     print(f"FALLO tren\n{buf[0][-1500:]}" if errores else
           "OK tren: ENTRADA_TREN en tiempo virtual, suelto con PU y cancelación por ENTRADA")
+    return 1 if errores else 0
+
+
+TIPO_UNHILO = 22
+
+
+def trama_unhilo(pin: int, rom: bytes, medida: int, presente: bool = True) -> bytes:
+    """UNHILO (v9): u8 pin, u8 rom[8], i16 medida en 1/16 °C, u8 bits (bit 0 = presente)."""
+    if len(rom) != 8:
+        raise ValueError("la ROM tiene 8 bytes")
+    return CABECERA.pack(TIPO_UNHILO, 9, 12, 0) + bytes([pin]) + rom + struct.pack("<hB", medida, int(presente))
+
+
+def crc8_unhilo(datos: bytes) -> int:
+    crc = 0
+    for b in datos:
+        for _ in range(8):
+            mezcla = (crc ^ b) & 1
+            crc >>= 1
+            if mezcla:
+                crc ^= 0x8C
+            b >>= 1
+    return crc
+
+
+def rom_ds18b20(serie: bytes) -> bytes:
+    base = bytes([0x28]) + serie
+    return base + bytes([crc8_unhilo(base)])
+
+
+def comprobar_unhilo(texto: str, sensores: dict) -> list:
+    """`sensores`: ROM en hex → (T a 12 bits, T a 9 bits)."""
+    errores = []
+    if f"N={len(sensores)}" not in texto:
+        errores.append(f"no se encontraron {len(sensores)} sensores")
+    if "PARASITO=0" not in texto:
+        errores.append("Read Power Supply debía decir alimentación externa")
+    for rom, (t12, t9) in sensores.items():
+        for etiqueta, t in (("T12", t12), ("T9", t9)):
+            if not re.search(rf"^{etiqueta} ROM={rom} T={t:.4f}\r?$", texto, re.MULTILINE):
+                errores.append(f"{etiqueta} de {rom}: se esperaba {t:.4f}")
+    if "TALLER-OK unhilo" not in texto:
+        errores.append("sin TALLER-OK unhilo")
+    return errores
+
+
+def unhilo(qemu: str, firmware: str) -> int:
+    """Dos DS18B20 en GPIO4 (21,5 °C y −10,125 °C): búsqueda, conversión a 12 y a 9 bits."""
+    tmp, proc, p_uart, p_puente = lanzar(qemu, firmware, True)
+    tramas: list = []
+    parar = threading.Event()
+    hilo = s_uart = s_puente = None
+    buf = [""]
+    a, b = rom_ds18b20(bytes([0x11, 0x4B, 0x46, 0x7F, 0x0C, 0x10])), rom_ds18b20(bytes([0x22, 0x4B, 0x46, 0x7F, 0x0C, 0x10]))
+    sensores = {a.hex().upper(): (21.5, 21.5), b.hex().upper(): (-10.125, -10.5)}
+
+    def esperar_linea(linea, plazo_s):
+        patron = r"^" + re.escape(linea) + r"\r?\n"
+        fin = time.monotonic() + plazo_s
+        s_uart.settimeout(0.2)
+        while time.monotonic() < fin:
+            if re.search(patron, buf[0], re.MULTILINE):
+                return True
+            try:
+                trozo = s_uart.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not trozo:
+                break
+            buf[0] += trozo.decode(errors="replace")
+        return bool(re.search(patron, buf[0], re.MULTILINE))
+
+    try:
+        s_puente = conectar(p_puente, proc)
+        hilo = threading.Thread(target=leer_tramas, args=(s_puente, tramas, parar), daemon=True)
+        hilo.start()
+        s_uart = conectar(p_uart, proc)
+        if esperar_linea("UNHILO-LISTO", 60):
+            s_puente.sendall(trama_unhilo(4, a, 344) + trama_unhilo(4, b, -162))
+            esperar_linea("TALLER-OK unhilo", 90)
+    finally:
+        proc.kill()
+        proc.wait()
+        if hilo is not None:
+            hilo.join(timeout=2)
+        parar.set()
+        for conexion in (s_puente, s_uart):
+            if conexion is not None:
+                conexion.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        tmp.cleanup()
+    errores = comprobar_unhilo(buf[0], sensores)
+    if not tramas or not es_hola(tramas[0], 9):
+        errores.append("sin HOLA v9")
+    for error in errores:
+        print("FALLO", error)
+    print(f"FALLO unhilo\n{buf[0][-1500:]}" if errores else
+          "OK unhilo: dos DS18B20 con búsqueda, Convert T y resolución de 9 bits en tiempo virtual")
     return 1 if errores else 0
 
 
@@ -1816,6 +1917,8 @@ if __name__ == "__main__":
         sys.exit(analogico(qemu, sys.argv[3]))
     if modo == "i2c":
         sys.exit(i2c(qemu, sys.argv[3]))
+    if modo == "unhilo":
+        sys.exit(unhilo(qemu, sys.argv[3]))
     if modo == "armado":
         sys.exit(armado(qemu, sys.argv[3]))
     if modo == "rmt":

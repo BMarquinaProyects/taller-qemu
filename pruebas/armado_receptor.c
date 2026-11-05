@@ -2,6 +2,7 @@
 #include <assert.h>
 #include "hw/misc/taller_armado.h"
 #include "hw/misc/taller_tren.h"
+#include "hw/misc/taller_unhilo.h"
 
 #define CABECERA 12
 #define ESP32_SENS_CANALES_ADC1 8
@@ -10,7 +11,7 @@ typedef void (*TallerPuenteReceptor)(void *, uint8_t, const uint8_t *, size_t);
 enum {
     TALLER_TRAMA_ENTRADA = 16, TALLER_TRAMA_ANALOGICO = 17,
     TALLER_TRAMA_I2C_DISPOSITIVO = 18, TALLER_TRAMA_I2C_REGISTROS = 19,
-    TALLER_TRAMA_ENTRADA_ARMADA = 20, TALLER_TRAMA_ENTRADA_TREN = 21,
+    TALLER_TRAMA_ENTRADA_ARMADA = 20, TALLER_TRAMA_ENTRADA_TREN = 21, TALLER_TRAMA_UNHILO = 22,
 };
 static unsigned trenes, cancelaciones;
 static TallerArmado armado;
@@ -48,6 +49,8 @@ static void esp32_gpio_armar_entrada(const uint8_t *p, size_t n)
 }
 static void esp32_gpio_cancelar_tren(uint8_t pin) { (void)pin; cancelaciones++; }
 static void esp32_gpio_tren_entrada(const uint8_t *p, size_t n) { (void)p; (void)n; trenes++; }
+static unsigned unhilos;
+static void esp32_gpio_unhilo(const uint8_t *p, size_t n) { (void)p; (void)n; unhilos++; }
 #include "clasico_receptor.h"
 typedef struct ESP32C3GPIOState { uint32_t in_externo; } ESP32C3GPIOState;
 typedef struct ESP32C3SarAdcState { uint16_t valores[5]; } ESP32C3SarAdcState;
@@ -82,6 +85,7 @@ static void esp32c3_gpio_cancelar_tren(ESP32C3GPIOState *s, uint8_t pin)
     (void)pin;
     cancelaciones++;
 }
+static void esp32c3_gpio_unhilo(ESP32C3GPIOState *s, const uint8_t *p, size_t n) { assert(s != NULL); (void)p; (void)n; unhilos++; }
 static void esp32c3_gpio_tren_entrada(ESP32C3GPIOState *s, const uint8_t *p, size_t n)
 {
     assert(s != NULL);
@@ -120,6 +124,7 @@ static void esp32s3_gpio_cancelar_tren(ESP32S3GPIOState *s, uint8_t pin)
     (void)pin;
     cancelaciones++;
 }
+static void esp32s3_gpio_unhilo(ESP32S3GPIOState *s, const uint8_t *p, size_t n) { assert(s != NULL); (void)p; (void)n; unhilos++; }
 static void esp32s3_gpio_tren_entrada(ESP32S3GPIOState *s, const uint8_t *p, size_t n)
 {
     assert(s != NULL);

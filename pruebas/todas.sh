@@ -13,6 +13,7 @@ python3 pruebas/qemu_prueba.py "$Q" pwm pruebas/pwm_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" analogico pruebas/analogico_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" i2c pruebas/i2c_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_prueba.flash.bin || r=1
+python3 pruebas/qemu_prueba.py "$Q" unhilo pruebas/unhilo_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" armado pruebas/armado_ocupado.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" rmt pruebas/rmt_prueba.flash.bin || r=1
 python3 pruebas/qemu_prueba.py "$Q" fpu pruebas/fpu_prueba.flash.bin || r=1

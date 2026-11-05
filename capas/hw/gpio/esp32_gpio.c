@@ -132,6 +132,37 @@ void esp32_gpio_cancelar_tren(uint8_t pin)
     }
 }
 
+/* UNHILO (v9): los sensores 1-Wire contestan aquí mismo, con el reloj virtual (M-244 de Taller). */
+void esp32_gpio_unhilo(const uint8_t *datos, size_t largo)
+{
+    if (gpio_del_chip) {
+        taller_unhilo_recibir(&gpio_del_chip->unhilo, datos, largo, 0xffffffffffull);
+    }
+}
+
+static void esp32_gpio_cuanto_armado(void *opaque);
+
+static void esp32_gpio_observar_unhilo(Esp32GpioState *s)
+{
+    TallerUnHiloPulso pulsos[TALLER_UNHILO_BUSES];
+    int64_t ahora_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned n = taller_unhilo_observar(&s->unhilo, s->out, s->enable, ahora_ns, pulsos);
+    int64_t cola_ns = taller_unhilo_cola_ns(&s->unhilo);
+
+    /* Con el bus en marcha, el mismo cuanto corto que los trenes armados (M-157). */
+    if (cola_ns > s->armado.fin_cola_ns) {
+        s->armado.fin_cola_ns = cola_ns;
+    }
+    if (taller_armado_cuanto_activo(&s->armado, ahora_ns) && !timer_pending(s->cuanto_armado)) {
+        esp32_gpio_cuanto_armado(s);
+    }
+
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t carga[13];
+        esp32_gpio_tren_entrada(carga, taller_unhilo_tren(&pulsos[i], carga));
+    }
+}
+
 static void esp32_gpio_paso_armado(void *opaque)
 {
     Esp32GpioTemporizadorArmado *t = opaque;
@@ -296,6 +327,7 @@ static void esp32_gpio_write(void *opaque, hwaddr addr,
     if (s->out != out_antes || s->enable != enable_antes) {
         taller_puente_gpio(s->out, s->enable);
         esp32_gpio_observar_armados(s);
+        esp32_gpio_observar_unhilo(s);
     }
 }
 
@@ -381,6 +413,7 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
         timer_del(s->temporizadores_tren[i].timer);
     }
     taller_tren_reiniciar(&s->tren);
+    taller_unhilo_reiniciar(&s->unhilo);
     taller_armado_reiniciar(&s->armado, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     for (int pin = 0; pin < ESP32_GPIO_CANTIDAD_PINES; pin++) {
         s->seleccion_salida[pin] = ESP32_GPIO_SENAL_SOFTWARE;
@@ -412,6 +445,7 @@ static void esp32_gpio_init(Object *obj)
     s->cuanto_armado = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    esp32_gpio_cuanto_armado, s);
     taller_tren_iniciar(&s->tren);
+    taller_unhilo_iniciar(&s->unhilo);
     for (unsigned i = 0; i < TALLER_TREN_RANURAS; i++) {
         s->temporizadores_tren[i].gpio = s;
         s->temporizadores_tren[i].indice = i;

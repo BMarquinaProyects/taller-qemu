@@ -38,6 +38,8 @@ class PruebaModelosI2cRmtS3(unittest.TestCase):
         codigo = codigo.replace('"hw/misc/taller_armado.h"', f'"{armado}"')
         tren = (raiz / "capas/include/hw/misc/taller_tren.h").as_posix()
         codigo = codigo.replace('"hw/misc/taller_tren.h"', f'"{tren}"')
+        unhilo = (raiz / "capas/include/hw/misc/taller_unhilo.h").as_posix()
+        codigo = codigo.replace('"hw/misc/taller_unhilo.h"', f'"{unhilo}"')
         compilar_ejecutar(codigo, cc)
 
 

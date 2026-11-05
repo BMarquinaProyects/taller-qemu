@@ -360,6 +360,8 @@ static void esp32c3_taller_recibir(void *opaque, uint8_t tipo,
         esp32c3_gpio_armar_entrada(&ms->gpio, datos, largo);
     } else if (tipo == TALLER_TRAMA_ENTRADA_TREN) {
         esp32c3_gpio_tren_entrada(&ms->gpio, datos, largo);
+    } else if (tipo == TALLER_TRAMA_UNHILO) {
+        esp32c3_gpio_unhilo(&ms->gpio, datos, largo);
     }
 }
 

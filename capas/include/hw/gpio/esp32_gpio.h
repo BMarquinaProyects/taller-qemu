@@ -6,6 +6,7 @@
 #include "qemu/timer.h"
 #include "hw/misc/taller_armado.h"
 #include "hw/misc/taller_tren.h"
+#include "hw/misc/taller_unhilo.h"
 
 #define TYPE_ESP32_GPIO "esp32.gpio"
 #define ESP32_GPIO(obj)             OBJECT_CHECK(Esp32GpioState, (obj), TYPE_ESP32_GPIO)
@@ -71,6 +72,7 @@ typedef struct Esp32GpioState {
     Esp32GpioTemporizadorArmado trenes[TALLER_ARMADO_RANURAS];
     QEMUTimer *cuanto_armado;
     TallerTren tren;                                   /* ENTRADA_TREN (v8) */
+    TallerUnHilo unhilo;                               /* UNHILO (v9): DS18B20 */
     Esp32GpioTemporizadorArmado temporizadores_tren[TALLER_TREN_RANURAS];
 } Esp32GpioState;
 
@@ -82,6 +84,8 @@ void esp32_gpio_armar_entrada(const uint8_t *datos, size_t largo);
 void esp32_gpio_tren_entrada(const uint8_t *datos, size_t largo);
 /* Un ENTRADA del puente cancela el tren pendiente del pin. */
 void esp32_gpio_cancelar_tren(uint8_t pin);
+/* Carga UNHILO (v9) sin cabecera: alta, cambio o baja de un sensor 1-Wire. */
+void esp32_gpio_unhilo(const uint8_t *datos, size_t largo);
 /* Primer pin conectado a la señal de la matriz de salida, o -1. */
 int esp32_gpio_pin_de_senal(int senal);
 

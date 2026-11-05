@@ -492,7 +492,7 @@ fragmentación UART, errores y plazo compartido. La compilación de QEMU,
 la ejecución integrada de `todas.sh` en Linux y la prueba del binario Windows
 quedan para el revisor; estas unitarias no certifican el arranque real.
 
-## Protocolo del puente (v8)
+## Protocolo del puente (v9)
 
 Con `-chardev socket,id=taller-puente,host=127.0.0.1,port=<p>,server=on,wait=on`, QEMU envía tramas
 little-endian con una cabecera de 12 bytes: `u8 tipo, u8 version=8, u16 longitud_carga, u64 t_ns`.
@@ -680,6 +680,41 @@ Se usa APB de 80 MHz, o REF_TICK de 1 MHz cuando `TICK_SEL=0`; no se simulan fad
 ni la fuente RC de 8 MHz. Los cambios LS se recalculan también antes de `PARA_UP`,
 sin repetir muestras idénticas. Si una señal aparece en varios GPIO, se usa el primero;
 al cambiar de pin se apaga el anterior.
+
+### UNHILO (tipo 22, v9): sensores DS18B20 en 1-Wire
+
+Las ranuras de 1-Wire duran 60 µs y el sensor tiene que contestar dentro de cada una: no da
+tiempo a preguntar fuera. Por eso el DS18B20 entero vive en QEMU
+(`capas/include/hw/misc/taller_unhilo.h`, lógica pura) y el puente solo trae su ROM y su
+temperatura.
+
+- Carga `u8 pin, u8 rom[8], i16 medida, u8 bits`, 12 bytes exactos: la medida en 1/16 °C
+  (LE) y el bit 0 de `bits`, presente (0 = quitar el sensor). Hasta 4 buses (pines) por chip
+  y 8 sensores por bus. Una trama con la misma ROM actualiza la medida.
+- El GPIO le cuenta al bus cada cambio de lo que conduce el ESP32 (`enable ? out : 1`, como los
+  trenes armados). Un nivel bajo de ≥ 400 µs es un reset: presencia de 120 µs, 30 µs después
+  de soltar. En las ranuras de lectura, el sensor que manda un 0 sujeta la línea 30 µs desde la
+  misma bajada del maestro. En las de escritura, menos de 15 µs a 0 es un 1. Los pulsos van por
+  la ruta de `ENTRADA_TREN`.
+- Comandos: Read ROM (33h), Match ROM (55h), Skip ROM (CCh), Search ROM (F0h), Alarm Search
+  (ECh), Convert T (44h; 0 en las ranuras de estado mientras convierte, el 80 % del máximo de la
+  hoja: 600 ms a 12 bits), Read Scratchpad (BEh, con CRC8), Write Scratchpad (4Eh), Copy
+  Scratchpad (48h, 10 ms), Recall E² (B8h) y Read Power Supply (B4h: alimentación externa).
+- Al darse de alta, el sensor arranca como al encender: 85 °C y TH, TL y configuración de la
+  EEPROM (75, 70 y 12 bits). El reset del ESP32 no le quita la tensión: conserva su scratchpad.
+- En el clásico y el S3, 1 ms tras cada cambio del bus se mantiene el cuanto corto de las dos CPU
+  de los trenes armados (M-157): si no, el turno de CPU1 alarga las ranuras de CPU0.
+
+## Prueba de 1-Wire
+
+`pruebas/unhilo_prueba/unhilo_prueba.ino` usa OneWire 2.3.8 y DallasTemperature 4.0.6 en GPIO4,
+con CPU1 siempre ocupada. Tras `UNHILO-LISTO`, el modo `unhilo` da de alta dos sensores (21,5 y
+−10,125 °C) y exige que la búsqueda encuentre los dos, que Read Power Supply diga alimentación
+externa y las temperaturas a 12 y a 9 bits (−10,5 °C: los bits sobrantes a 0). La imagen de
+4 MiB, `pruebas/unhilo_prueba.flash.bin`, se genera como la de `armado_prueba` (core 3.3.12,
+`esp32:esp32:esp32:FlashMode=dio`). `pruebas/unhilo_unitarias.py` compila la lógica C con un
+maestro simulado (`pruebas/unhilo_logica.c`): CRC de la hoja, presencia, conversión a 12 y 9
+bits, búsqueda y Match ROM con dos sensores y bajas.
 
 ## SPI con DMA (v0.7.0)
 

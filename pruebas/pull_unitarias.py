@@ -100,7 +100,7 @@ class PruebaVerificadorPull(unittest.TestCase):
                     firmware.sendall(bytes([b]))
                 # Hay latidos pendientes de antes de inyectar: no son un acuse.
                 for ns in (2, 3):
-                    enviar_trama((8, 8, ns, b""))
+                    enviar_trama((8, qemu_prueba.VERSION_PUENTE, ns, b""))
                 esperado = b"".join(qemu_prueba.trama_entrada(p, 0) for p in pines)
                 self.assertEqual(recibir(externo, len(esperado)), esperado)
                 self.assertEqual(recibir(firmware, 1), b"C")
@@ -165,8 +165,9 @@ class PruebaPullModelo(unittest.TestCase):
         plantilla = (RAIZ / "pruebas/pull_gpio_modelo.c").read_text(encoding="utf-8")
         armado = (RAIZ / "capas/include/hw/misc/taller_armado.h").read_text(encoding="utf-8")
         tren = (RAIZ / "capas/include/hw/misc/taller_tren.h").read_text(encoding="utf-8")
+        unhilo = (RAIZ / "capas/include/hw/misc/taller_unhilo.h").read_text(encoding="utf-8")
         pull = (RAIZ / "capas/include/hw/gpio/taller_pull.h").read_text(encoding="utf-8")
-        codigo = plantilla.replace("/* CABECERA_REAL */", (armado + tren + pull + cab).replace("#pragma once", "")).replace(
+        codigo = plantilla.replace("/* CABECERA_REAL */", (armado + tren + unhilo + pull + cab).replace("#pragma once", "")).replace(
             "/* MODELO_REAL */", modelo)
         self.compilar(f"#define CHIP_{chip.upper()} 1\n" + codigo)
 
