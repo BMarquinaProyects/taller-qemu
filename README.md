@@ -454,6 +454,19 @@ impide registrar la partición `vfs` en una flash de 8 MiB. La prueba `s3_flash_
 Arduino en QIO; el arnés rellena la imagen hasta 16 MiB) comprueba que borrar, escribir y leer
 no tenga desfase.
 
+## Reloj de la CPU del S3 (v0.18.0, E-096 de Taller)
+
+El modelo de reloj del S3 de Espressif ignora las escrituras de `SYSTEM_CPU_PER_CONF` (0x600C0010)
+y `SYSTEM_SYSCLK_CONF` (0x600C0060), y la CPU se quedaba con los 40 MHz del núcleo: CCOUNT corría 4
+veces más despacio de lo que cree ESP-IDF (160 MHz) y `esp_rom_delay_us(10000)` duraba 40 ms. La
+máquina intercepta ahora esos dos registros (`taller_reloj_s3_*`) y pone el reloj de las dos CPU en
+lo que elige el firmware: con `SOC_CLK_SEL` = PLL, 80, 160 o 240 MHz según `CPUPERIOD_SEL` y
+`PLL_FREQ_SEL`; con XTAL, 40 MHz. Hasta la primera escritura, 40 MHz. Igual que hace el clásico
+con `DPORT_CPU_PER_CONF`. Las **lecturas** siguen dando lo mismo que el modelo de Espressif (PLL de
+480 MHz, 80 MHz y cristal de 40 MHz): si devolvían lo escrito, ESP-IDF abortaba al arrancar. En el
+cambio, CCOUNT se rebasa (QEMU lo calcula desde `time_base` con el reloj actual y saltaría) y se
+reprograman los CCOMPARE pendientes.
+
 ## FPU tras el reset en ESP32 y ESP32-S3 (M-160)
 
 Las capas `hw/xtensa/esp32.c` y `hw/xtensa/esp32s3.c` fijan **CPENABLE=0xff**

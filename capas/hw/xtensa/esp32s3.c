@@ -175,6 +175,123 @@ typedef struct Esp32s3SocState {
     uint32_t requested_reset;
 } Esp32s3SocState;
 
+/*
+ * Reloj de la CPU (E-096 de Taller): el modelo de reloj del S3 de Espressif ignora las escrituras
+ * de SYSTEM_CPU_PER_CONF y SYSTEM_SYSCLK_CONF y la CPU se queda con los 40 MHz del núcleo, así que
+ * CCOUNT corre 4 veces más despacio de lo que cree el firmware (160 MHz) y esp_rom_delay_us(10)
+ * dura 40 µs. Estos dos registros se interceptan aquí y la CPU sigue lo que elige el firmware,
+ * como hace el clásico con DPORT_CPU_PER_CONF. El resto del bloque SYSTEM sigue en su modelo.
+ */
+typedef struct TallerRelojS3 {
+    MemoryRegion mr_cpu_per_conf;
+    MemoryRegion mr_sysclk_conf;
+    XtensaCPU *cpus;
+    uint32_t cpu_per_conf;
+    uint32_t sysclk_conf;
+} TallerRelojS3;
+
+static TallerRelojS3 taller_reloj_s3;
+
+static uint32_t taller_reloj_s3_hz(const TallerRelojS3 *r)
+{
+    unsigned fuente = (r->sysclk_conf >> 10) & 3;       /* SOC_CLK_SEL */
+    unsigned periodo = r->cpu_per_conf & 3;             /* CPUPERIOD_SEL */
+    bool pll_320 = (r->cpu_per_conf >> 2) & 1;          /* PLL_FREQ_SEL */
+
+    if (fuente == 1) {
+        static const uint32_t mhz_480[] = {80, 160, 240, 240};
+        static const uint32_t mhz_320[] = {80, 160, 160, 160};
+        return (pll_320 ? mhz_320 : mhz_480)[periodo] * 1000000u;
+    }
+    /* XTAL (o RC_FAST, que en QEMU no tiene sentido simular): los 40 MHz del núcleo. */
+    return 40000000u;
+}
+
+/* Cambia el reloj sin que CCOUNT salte: QEMU calcula CCOUNT desde time_base con el reloj actual,
+ * así que se rebasa en el instante del cambio y se reprograman los CCOMPARE pendientes. */
+static void taller_reloj_s3_aplicar(TallerRelojS3 *r)
+{
+    uint32_t hz = taller_reloj_s3_hz(r);
+    for (int i = 0; i < ESP32S3_CPU_COUNT; i++) {
+        XtensaCPU *cpu = &r->cpus[i];
+        CPUXtensaState *env = &cpu->env;
+        if (clock_get_hz(cpu->clock) == hz) {
+            continue;
+        }
+        int64_t ahora = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        uint32_t ccount = env->ccount_base +
+            (uint32_t)clock_ns_to_ticks(cpu->clock, ahora - env->time_base);
+        clock_update_hz(cpu->clock, hz);
+        env->ccount_base = ccount;
+        env->time_base = ahora;
+        env->ccount_time = ahora;
+        env->sregs[CCOUNT] = ccount;
+        for (unsigned k = 0; k < env->config->nccompare; k++) {
+            if (timer_pending(env->ccompare[k].timer)) {
+                uint64_t dcc = (uint64_t)(env->sregs[CCOMPARE + k] - ccount - 1) + 1;
+                timer_mod(env->ccompare[k].timer, ahora + clock_ticks_to_ns(cpu->clock, dcc));
+            }
+        }
+    }
+}
+
+/* Las lecturas siguen dando lo mismo que el modelo de Espressif (PLL de 480 MHz y CPU a 80 MHz,
+ * cristal de 40 MHz): ESP-IDF arranca bien con eso y no hay que cambiar lo que ve. Solo cambia la
+ * velocidad de CCOUNT, que es lo que estaba mal. */
+static uint64_t taller_reloj_s3_leer(void *opaque, hwaddr addr, unsigned size)
+{
+    return 0;
+}
+
+static void taller_reloj_s3_escribir_cpu(void *opaque, hwaddr addr, uint64_t v, unsigned size)
+{
+    TallerRelojS3 *r = opaque;
+    r->cpu_per_conf = (uint32_t)v;
+    taller_reloj_s3_aplicar(r);
+}
+
+static void taller_reloj_s3_escribir_sys(void *opaque, hwaddr addr, uint64_t v, unsigned size)
+{
+    TallerRelojS3 *r = opaque;
+    r->sysclk_conf = (uint32_t)v;
+    taller_reloj_s3_aplicar(r);
+}
+
+static uint64_t taller_reloj_s3_leer_sys(void *opaque, hwaddr addr, unsigned size)
+{
+    return 1u | (1u << 10) | (40u << 12) | (1u << 19);
+}
+
+static const MemoryRegionOps taller_reloj_s3_cpu_ops = {
+    .read = taller_reloj_s3_leer,
+    .write = taller_reloj_s3_escribir_cpu,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static const MemoryRegionOps taller_reloj_s3_sys_ops = {
+    .read = taller_reloj_s3_leer_sys,
+    .write = taller_reloj_s3_escribir_sys,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+/* Valores de reset (los del modelo de Espressif): PLL de 480 MHz y CPU a 80 MHz. La CPU no se toca
+ * hasta que el firmware escribe: arranca con los 40 MHz del núcleo, como el cristal. */
+static void taller_reloj_s3_montar(MemoryRegion *sys_mem, Esp32s3SocState *ss)
+{
+    TallerRelojS3 *r = &taller_reloj_s3;
+    r->cpus = ss->cpu;
+    r->cpu_per_conf = 0;
+    r->sysclk_conf = 1u | (1u << 10) | (40u << 12);
+    memory_region_init_io(&r->mr_cpu_per_conf, OBJECT(ss), &taller_reloj_s3_cpu_ops, r,
+                          "taller.reloj-s3.cpu-per-conf", 4);
+    memory_region_init_io(&r->mr_sysclk_conf, OBJECT(ss), &taller_reloj_s3_sys_ops, r,
+                          "taller.reloj-s3.sysclk-conf", 4);
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTEM_BASE + 0x010, &r->mr_cpu_per_conf, 1);
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTEM_BASE + 0x060, &r->mr_sysclk_conf, 1);
+}
+
 
 /* Temporary macro to mark the CPU as in non-debugging mode */
 #define A_ASSIST_DEBUG_CORE_0_DEBUG_MODE_REG    0x098
@@ -770,6 +887,7 @@ static void esp32s3_machine_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&ss->clock), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->clock), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTEM_BASE, mr, 0);
+        taller_reloj_s3_montar(sys_mem, ss);
         /* Connect the IRQ lines to the interrupt matrix */
         for (int i = 0; i < ESP32S3_SYSTEM_CPU_INTR_COUNT; i++) {
             sysbus_connect_irq(SYS_BUS_DEVICE(&ss->clock), i,
